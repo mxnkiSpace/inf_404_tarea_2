@@ -100,7 +100,7 @@ def parse_ctt(file_name):
                         day_period=int(l[2])
                     )
                 )
-    print(courses)
+                
     instance = Instance(
         name = info['name'],
         num_courses=int(info['courses']),
