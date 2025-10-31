@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-
+from typing import Dict, List, Set
 '''
 Courses: <CourseID> <Teacher> <# Lectures> <MinWorkingDays> <# Students>
 Rooms: <RoomID> <Capacity>
@@ -23,12 +23,12 @@ class Room:
 @dataclass
 class Curriculum:
     #name: str
-    num_courses: int
-    courses: set
+    #num_courses: int
+    courses: set[str]
 
 @dataclass
 class Unavailability:
-    course_name: str
+    course_id: str
     day: int
     day_period: int
 
@@ -42,76 +42,78 @@ class Instance:
     num_curricula: int
     num_constraints: int
 
-    courses: dict
-    rooms: dict
-    curricula: dict 
-    unavailabilyties: set
-
+    courses: Dict[str, Course]
+    rooms: Dict[str, Room]
+    curricula: Dict[str, Curriculum] 
+    unavailabilities: List[Unavailability] 
 
 def parse_ctt(file_name):
-    info = []
+    info = {}
     courses = {}
     rooms = {}
     curricula = {}
-    unavailabilyties = []
+    unavailabilities = []
 
-    flag_info = True
-    flag_courses = False
-    flag_rooms = False
-    flag_curricula = False
-    flag_unavai = False
+    state = "INFO"
+
     with open(file_name) as file:
         for line in file:
             l = line.strip().split()
             if not l:
                 continue
 
-            if l[0] == "COURSES:":
-                flag_info = False
-                flag_courses = True
-                continue
-            if l[0] == "ROOMS:":
-                flag_courses = False
-                flag_rooms = True
-                continue
-            if l[0] == "CURRICULA:":
-                flag_rooms = False
-                flag_curricula = True
-                continue
-            if l[0] == "UNAVAILABILITY_CONSTRAINTS:":
-                flag_curricula = False
-                flag_unavai = True
-                continue
-            if l[0] == "END.":
-                break    
             
-            if flag_info:
-                info.append(l[-1])
-            if flag_courses:
-                courses[l[0]] = Course(l[1], int(l[2]), int(l[3]), int(l[4])) 
-            if flag_rooms:
-                rooms[l[0]] = Room(l[-1])
-            if flag_curricula:
-                c = []
-                for i in range(int(l[1])):
-                    c.append(l[2 + i])
-                curricula[l[0]] = Curriculum(l[1], c)
-            if flag_unavai:
-                const = Unavailability(l[0], l[1], l[2])
-                unavailabilyties.append(const)
+            if len(l) == 1:
+                first_word = l[0]
+                if first_word.endswith(":"):
+                    state = l[0]
+                    state = state[:-1]
+                    continue
+                else:
+                    break
+            
+            if state == 'INFO':
+                key = l[0].lower()
+                key = key[:-1]
+                value = l[1]
+                info[key] = value
 
+            elif state == 'COURSES':
+                courses[l[0]] = Course(
+                    teacher=l[1], 
+                    num_lectures=int(l[2]), 
+                    min_working_days=int(l[3]), 
+                    num_students=int(l[4])
+                )
+                
+            elif state == "ROOMS":
+                rooms[l[0]] = Room(capacity=int(l[1]))
+                
+            elif state == "CURRICULA":
+                curricula[l[0]] = Curriculum(courses=set(l[2:]))
+                
+            elif state == "UNAVAILABILITY_CONSTRAINTS":
+                unavailabilities.append(
+                    Unavailability(
+                        course_id=l[0], 
+                        day=int(l[1]), 
+                        day_period=int(l[2])
+                    )
+                )
+    print(courses)
     instance = Instance(
-        info[0],
-        int(info[1]),
-        int(info[2]),
-        int(info[3]),
-        int(info[4]),
-        int(info[5]),
-        int(info[6]),
+        name = info['name'],
+        num_courses=int(info['courses']),
+        num_rooms=int(info['rooms']),
+        num_days=int(info['days']),
+        periods_per_day=int(info['periods_per_day']),
+        num_curricula=int(info['curricula']),
+        num_constraints=int(info['constraints']),
         courses=courses,
         rooms=rooms,
         curricula=curricula,
-        unavailabilyties=unavailabilyties)
+        unavailabilities=unavailabilities
+        )
     
     return instance
 
