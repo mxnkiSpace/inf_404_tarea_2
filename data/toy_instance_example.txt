@@ -1,0 +1,30 @@
+Name: toy_instance
+Courses: 4
+Rooms: 2
+Days: 3
+Periods_per_day: 3
+Curricula: 2
+Constraints: 3
+
+COURSES:
+# CourseID  TeacherID  Lectures  MinDays  Students
+CS101 T1 3 2 25
+CS102 T1 2 1 20
+MA101 T2 3 2 30
+PH101 T3 2 1 15
+
+ROOMS:
+# RoomID  Capacity
+R1 30
+R2 40
+
+CURRICULA:
+# CurriculumID  Courses
+SCIENCE CS101 MA101 PH101
+ENGINEERING CS101 CS102 MA101
+
+UNAVAILABILITY_CONSTRAINTS:
+# CourseID  Day  Period
+CS102 1 2   # CS102 no puede darse el día 1 en el periodo 2
+MA101 3 1   # MA101 no puede darse el día 3 en el primer periodo
+PH101 2 3   # PH101 no puede darse el día 2 en el último periodo
