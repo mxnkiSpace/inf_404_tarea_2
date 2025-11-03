@@ -15,10 +15,41 @@ def encoder(instance: Instance):
     cr, n_var, id_to_var = get_cr(courses, instance.rooms, n_var, id_to_var)
     kh, n_var, id_to_var = get_kh(instance.curricula, total_hours, n_var, id_to_var)
     #print(cd)
-    clauses.extend(relation_ch_cd(ch, cd, ppd))  
+    clauses.extend(relation_ch_cd(ch, cd, ppd)) 
+    clauses.extend(relation_ch_kh(ch, kh, instance.curricula)) 
     print(clauses, len(clauses))
 
 #print(f"La clase {i} se dicta en el horario {j+1} del día {k+1}")
+
+
+def relation_ch_kh(ch, kh, curricula):
+    clauses = []
+    for (c, h) in ch:
+        ks = c_in_k(c, curricula)
+        lit_ch = -ch[(c, h)]
+        for k in ks:
+            if (k, h) in kh:
+                clauses.append([lit_ch, kh[(k, h)]])
+    ###TODO: Hay que echarle un ojo a esta que me genera dudas...
+    for (k, h) in kh:
+        courses = curricula[k].courses
+        if len(courses) > 0:
+            lit_kh = -kh[(k, h)]
+            aux = [ch[course, h] for course in courses]
+            clause = [lit_kh]
+            clause.extend(aux)
+            clauses.append(clause)
+    return clauses
+
+def c_in_k(c, curricula):
+    out = []
+    for k in curricula:
+        curriculum = curricula[k]
+        for course in curriculum.courses:
+            if c == course:
+                out.append(k)
+    return out
+
 
 def relation_ch_cd(ch, cd, ppd):
     """
