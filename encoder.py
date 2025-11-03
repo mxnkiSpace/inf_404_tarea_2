@@ -10,6 +10,7 @@ def encoder(instance: Instance):
     total_hours =  ppd * instance.num_days
     courses = instance.courses
     curricula = instance.curricula
+    rooms = instance.rooms
     # Creacion de las variables
     ch, n_var, id_to_var = get_ch(courses, total_hours, n_var, id_to_var)
     cd, n_var, id_to_var = get_cd(courses, instance.num_days, n_var, id_to_var)
@@ -20,7 +21,35 @@ def encoder(instance: Instance):
     clauses.extend(relation_ch_kh(ch, kh, curricula)) 
     clauses.extend(curriculum_clashes(ch, curricula))
     clauses.extend(teacher_clashes(courses, ch))
+    clauses.extend(room_clashes(ch, cr, courses, rooms))
     print(clauses, len(clauses))
+
+def room_clashes(ch, cr, courses_dict, rooms_dict):
+    clauses = []
+    hours = {h for (c, h) in ch.keys()}
+    all_course_ids = list(courses_dict.keys())
+    all_room_ids = list(rooms_dict.keys())
+    num_courses = len(all_course_ids)
+    for h in hours:
+        for r in all_room_ids:
+            for i in range(num_courses):
+                for j in range(i + 1, num_courses):
+                    c_i = all_course_ids[i]
+                    c_j = all_course_ids[j]
+                    if (c_i, h) in ch and (c_j, h) in ch and (c_i, r) in cr and (c_j, r) in cr:
+                        id_ch_i = ch[(c_i, h)]
+                        id_ch_j = ch[(c_j, h)]
+                        id_cr_i = cr[(c_i, r)]
+                        id_cr_j = cr[(c_j, r)]
+                        clause = [
+                            -id_ch_i,  
+                            -id_ch_j,  
+                            -id_cr_i,  
+                            -id_cr_j   
+                        ]
+                        clauses.append(clause)      
+    return clauses
+
 
 def teacher_clashes(courses, ch):
     clauses = []
@@ -28,7 +57,7 @@ def teacher_clashes(courses, ch):
     num_courses = len(c)
     teacher_map = map_teacher(courses=courses)
     hours = [h for (c, h) in ch.keys()]
-    for teacher_id, courses_list in teacher_map.items():
+    for _, courses_list in teacher_map.items():
         num_courses = len(courses_list)
         if num_courses < 2:
             continue
@@ -42,8 +71,6 @@ def teacher_clashes(courses, ch):
                         id_cj_h = ch[(c_j, h)]
                         clauses.append([-id_ci_h, -id_cj_h])
     return clauses
-
-
 
 def curriculum_clashes(ch, curricula):
     clauses = []
