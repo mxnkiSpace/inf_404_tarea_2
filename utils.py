@@ -23,3 +23,25 @@ def hour_for_day(d, ppd):
     start = d*ppd
     end = start + ppd
     return list(range(start, end))
+
+def teacher(course):
+    """
+    Devuelve el profesor que hace clases en course
+    input:
+        course: str, nombre del curso
+    output:
+        course.teacher: str, nombre del profesor
+    """
+    return course.teacher
+
+def map_teacher(courses):
+    teachers = {}
+    for c_id, course_obj in courses.items():
+        teacher_id = course_obj.teacher 
+        
+        if teacher_id not in teachers:
+            teachers[teacher_id] = []
+        teachers[teacher_id].append(c_id)
+            
+    return teachers
+    
