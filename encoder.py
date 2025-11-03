@@ -33,8 +33,25 @@ def encoder(instance: Instance):
     clauses.extend(time_slot_availability(ch,unavailabilities, ppd ))
     clauses.extend(number_of_lectures(courses, ch, vpool))
     clauses.extend(room_capacity(courses, rooms, cr))
+    clauses.extend(room_stability(courses, rooms, cr, vpool))
     print(clauses, len(clauses))
     #print(vpool)
+
+def room_stability(courses, rooms, cr, vpool):
+    clauses = []
+    all_room_ids = rooms.keys()
+    
+    for c_id in courses.keys():
+        literals = []
+        for r_id in all_room_ids:
+            cr_key = (c_id, r_id)
+            if cr_key in cr:
+                literals.append(cr[cr_key])
+        if literals:
+            cnf = exactly(literals=literals, k=1, vpool=vpool)
+            clauses.extend(cnf)
+            
+    return clauses
 
 def room_capacity(courses, rooms, cr):
     clauses = []
