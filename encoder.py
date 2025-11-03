@@ -1,5 +1,6 @@
 from classes_ctt import Instance, parse_ctt
-from utils import hour_for_day, day, teacher, map_teacher
+from utils import hour_for_day, day, map_teacher, exactly
+from pysat.formula import IDPool
 import time
 
 def encoder(instance: Instance):
@@ -17,6 +18,10 @@ def encoder(instance: Instance):
     cd, n_var, id_to_var = get_cd(courses, instance.num_days, n_var, id_to_var)
     cr, n_var, id_to_var = get_cr(courses, instance.rooms, n_var, id_to_var)
     kh, n_var, id_to_var = get_kh(instance.curricula, total_hours, n_var, id_to_var)
+    #Manejo de variables con PySAT
+    max_id_original = n_var - 1
+    vpool = IDPool(start_from=max_id_original + 1)
+    #print(vpool)
     # Creacion de clausulas a partir de relaciones
     clauses.extend(relation_ch_cd(ch, cd, ppd)) 
     clauses.extend(relation_ch_kh(ch, kh, curricula))
@@ -24,9 +29,23 @@ def encoder(instance: Instance):
     clauses.extend(curriculum_clashes(ch, curricula))
     clauses.extend(teacher_clashes(courses, ch))
     clauses.extend(room_clashes(ch, cr, courses, rooms))
-    clauses.extend(room_clashes(ch, cr, courses, rooms))
-    time_slot_availability(ch,unavailabilities, ppd )
+    # Creacion de clausulas por disponibilidad
+    clauses.extend(time_slot_availability(ch,unavailabilities, ppd ))
+    clauses.extend(number_of_lectures(courses, ch, vpool))
     print(clauses, len(clauses))
+    #print(vpool)
+
+def number_of_lectures(courses, ch, vpool):
+    clauses = []
+    hours = {h for (c, h) in ch.keys()}
+    for c in courses:
+        literals = []
+        k = courses[c].num_lectures
+        for h in hours:
+            literals.append(ch[(c, h)])
+        clauses.extend(exactly(literals=literals, k=k, vpool=vpool))
+
+    return clauses
 
 def  time_slot_availability(ch, unavailabilities, ppd):
     clauses = []

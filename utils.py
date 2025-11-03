@@ -1,4 +1,5 @@
 from math import ceil
+from pysat.card import CardEnc
 
 def day(h, ppd):
     """
@@ -24,15 +25,6 @@ def hour_for_day(d, ppd):
     end = start + ppd
     return list(range(start, end))
 
-def teacher(course):
-    """
-    Devuelve el profesor que hace clases en course
-    input:
-        course: str, nombre del curso
-    output:
-        course.teacher: str, nombre del profesor
-    """
-    return course.teacher
 
 def map_teacher(courses):
     teachers = {}
@@ -44,4 +36,9 @@ def map_teacher(courses):
         teachers[teacher_id].append(c_id)
             
     return teachers
-    
+
+def exactly(k, literals, vpool):
+
+    cnf = CardEnc.equals(lits=literals, encoding=3, bound=k, vpool=vpool)
+
+    return cnf.clauses
