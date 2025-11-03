@@ -11,6 +11,7 @@ def encoder(instance: Instance):
     courses = instance.courses
     curricula = instance.curricula
     rooms = instance.rooms
+    unavailabilities = instance.unavailabilities
     # Creacion de las variables
     ch, n_var, id_to_var = get_ch(courses, total_hours, n_var, id_to_var)
     cd, n_var, id_to_var = get_cd(courses, instance.num_days, n_var, id_to_var)
@@ -18,11 +19,22 @@ def encoder(instance: Instance):
     kh, n_var, id_to_var = get_kh(instance.curricula, total_hours, n_var, id_to_var)
     # Creacion de clausulas a partir de relaciones
     clauses.extend(relation_ch_cd(ch, cd, ppd)) 
-    clauses.extend(relation_ch_kh(ch, kh, curricula)) 
+    clauses.extend(relation_ch_kh(ch, kh, curricula))
+    # Creacion de clausulas a partir de colisiones
     clauses.extend(curriculum_clashes(ch, curricula))
     clauses.extend(teacher_clashes(courses, ch))
     clauses.extend(room_clashes(ch, cr, courses, rooms))
+    clauses.extend(room_clashes(ch, cr, courses, rooms))
+    time_slot_availability(ch,unavailabilities, ppd )
     print(clauses, len(clauses))
+
+def  time_slot_availability(ch, unavailabilities, ppd):
+    clauses = []
+    for i in unavailabilities:
+        course, day, period = i.course_id, i.day, i.day_period
+        hour = day * ppd + period 
+        clauses.append([-ch[(course, hour)]])
+    return clauses
 
 def room_clashes(ch, cr, courses_dict, rooms_dict):
     clauses = []
