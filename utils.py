@@ -42,3 +42,7 @@ def exactly(k, literals, vpool):
     cnf = CardEnc.equals(lits=literals, encoding=3, bound=k, vpool=vpool)
 
     return cnf.clauses
+
+def at_least(k, lits, vpool):
+    cnf = CardEnc.atleast(lits=lits, bound=k, encoding=3, vpool=vpool)
+    return cnf.clauses

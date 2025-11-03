@@ -1,5 +1,5 @@
 from classes_ctt import Instance, parse_ctt
-from utils import hour_for_day, day, map_teacher, exactly
+from utils import hour_for_day, day, map_teacher, exactly, at_least
 from pysat.formula import IDPool
 import time
 
@@ -8,7 +8,8 @@ def encoder(instance: Instance):
     n_var = 1
     clauses = []
     ppd = instance.periods_per_day
-    total_hours =  ppd * instance.num_days
+    days = instance.num_days
+    total_hours =  ppd * days
     courses = instance.courses
     curricula = instance.curricula
     rooms = instance.rooms
@@ -34,8 +35,27 @@ def encoder(instance: Instance):
     clauses.extend(number_of_lectures(courses, ch, vpool))
     clauses.extend(room_capacity(courses, rooms, cr))
     clauses.extend(room_stability(courses, rooms, cr, vpool))
+    clauses.extend(min_working_days(courses, cd, vpool, days))
     print(clauses, len(clauses))
     #print(vpool)
+
+def min_working_days(courses, cd, vpool, num_days):
+    clauses = []
+    all_days = range(num_days) 
+    
+    for c_id, course_obj in courses.items():
+        literals = []
+        k = course_obj.min_working_days 
+        for d in all_days:
+            cd_key = (c_id, d)
+            if cd_key in cd:
+                literals.append(cd[cd_key])
+        if literals and k > 0:
+            cnf = at_least(k, literals, vpool)
+            clauses.extend(cnf)
+            
+    return clauses
+
 
 def room_stability(courses, rooms, cr, vpool):
     clauses = []
