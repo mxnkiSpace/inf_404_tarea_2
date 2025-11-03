@@ -1,5 +1,5 @@
 from classes_ctt import Instance, parse_ctt
-from utils import hour_for_day, day
+from utils import hour_for_day, day, teacher, map_teacher
 import time
 
 def encoder(instance: Instance):
@@ -19,7 +19,31 @@ def encoder(instance: Instance):
     clauses.extend(relation_ch_cd(ch, cd, ppd)) 
     clauses.extend(relation_ch_kh(ch, kh, curricula)) 
     clauses.extend(curriculum_clashes(ch, curricula))
+    clauses.extend(teacher_clashes(courses, ch))
     print(clauses, len(clauses))
+
+def teacher_clashes(courses, ch):
+    clauses = []
+    c = list(courses.keys())
+    num_courses = len(c)
+    teacher_map = map_teacher(courses=courses)
+    hours = [h for (c, h) in ch.keys()]
+    for teacher_id, courses_list in teacher_map.items():
+        num_courses = len(courses_list)
+        if num_courses < 2:
+            continue
+        for h in hours:
+            for i in range(num_courses):
+                for j in range(i+1, num_courses):
+                    c_i = c[i]
+                    c_j = c[j]
+                    if (c_i, h) in ch and (c_j, h) in ch:
+                        id_ci_h = ch[(c_i, h)]
+                        id_cj_h = ch[(c_j, h)]
+                        clauses.append([-id_ci_h, -id_cj_h])
+    return clauses
+
+
 
 def curriculum_clashes(ch, curricula):
     clauses = []
