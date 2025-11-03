@@ -1,5 +1,5 @@
 from classes_ctt import Instance, parse_ctt
-from utils import hour_for_day, day, map_teacher, exactly, at_least
+from utils import hour_for_day, day, map_teacher, exactly, at_least, is_first_slot_of_day, is_last_slot_of_day
 from pysat.formula import IDPool
 import time
 
@@ -36,8 +36,36 @@ def encoder(instance: Instance):
     clauses.extend(room_capacity(courses, rooms, cr))
     clauses.extend(room_stability(courses, rooms, cr, vpool))
     clauses.extend(min_working_days(courses, cd, vpool, days))
+    clauses.extend(isolated_lectures(kh, curricula, ppd, total_hours))
     print(clauses, len(clauses))
     #print(vpool)
+
+def isolated_lectures(kh, curricula, ppd, total_hours):
+    clauses = []
+    all_hours = range(total_hours)
+    
+    for k_id in curricula.keys():
+        for h in all_hours:
+            kh_h_key = (k_id, h)
+            if kh_h_key in kh:
+                lit_kh_h = -kh[kh_h_key] 
+                
+                if is_first_slot_of_day(h, ppd):
+                    if (k_id, h + 1) in kh: 
+                        clauses.append([lit_kh_h, kh[(k_id, h + 1)]])
+
+                elif is_last_slot_of_day(h, ppd):
+                    if (k_id, h - 1) in kh:
+                        clauses.append([lit_kh_h, kh[(k_id, h - 1)]])
+                
+                else:
+                    lit_kh_h_prev = kh.get((k_id, h - 1))
+                    lit_kh_h_next = kh.get((k_id, h + 1))
+                    
+                    if lit_kh_h_prev and lit_kh_h_next:
+                        clauses.append([lit_kh_h, lit_kh_h_prev, lit_kh_h_next])
+                        
+    return clauses
 
 def min_working_days(courses, cd, vpool, num_days):
     clauses = []

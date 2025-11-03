@@ -46,3 +46,9 @@ def exactly(k, literals, vpool):
 def at_least(k, lits, vpool):
     cnf = CardEnc.atleast(lits=lits, bound=k, encoding=3, vpool=vpool)
     return cnf.clauses
+
+def is_first_slot_of_day(h, ppd):
+    return h % ppd == 0
+
+def is_last_slot_of_day(h, ppd):
+    return (h + 1) % ppd == 0
