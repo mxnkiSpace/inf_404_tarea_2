@@ -1,6 +1,6 @@
 from classes_ctt import Instance, parse_ctt
+from utils import hour_for_day, day
 import time
-from math import ceil
 
 def encoder(instance: Instance):
     id_to_var = {}
@@ -9,18 +9,33 @@ def encoder(instance: Instance):
     ppd = instance.periods_per_day
     total_hours =  ppd * instance.num_days
     courses = instance.courses
+    curricula = instance.curricula
     # Creacion de las variables
     ch, n_var, id_to_var = get_ch(courses, total_hours, n_var, id_to_var)
     cd, n_var, id_to_var = get_cd(courses, instance.num_days, n_var, id_to_var)
     cr, n_var, id_to_var = get_cr(courses, instance.rooms, n_var, id_to_var)
     kh, n_var, id_to_var = get_kh(instance.curricula, total_hours, n_var, id_to_var)
-    #print(cd)
+    # Creacion de clausulas a partir de relaciones
     clauses.extend(relation_ch_cd(ch, cd, ppd)) 
-    clauses.extend(relation_ch_kh(ch, kh, instance.curricula)) 
+    clauses.extend(relation_ch_kh(ch, kh, curricula)) 
+    clauses.extend(curriculum_clashes(ch, curricula))
     print(clauses, len(clauses))
 
-#print(f"La clase {i} se dicta en el horario {j+1} del día {k+1}")
-
+def curriculum_clashes(ch, curricula):
+    clauses = []
+    for curriculum in curricula:
+        courses = list(curricula[curriculum].courses)
+        num_courses = len(courses)
+        hours = [h for (c, h) in ch]
+        for h in hours:
+            for i in range(num_courses):
+                for j in range(i + 1, num_courses):
+                    c_i = courses[i]
+                    c_j = courses[j]
+                    if (c_i, h) in ch and (c_j, h) in ch:
+                        clause = [-ch[(c_i, h)], -ch[(c_j, h)]]
+                        clauses.append(clause)
+    return clauses
 
 def relation_ch_kh(ch, kh, curricula):
     clauses = []
@@ -30,7 +45,7 @@ def relation_ch_kh(ch, kh, curricula):
         for k in ks:
             if (k, h) in kh:
                 clauses.append([lit_ch, kh[(k, h)]])
-    ###TODO: Hay que echarle un ojo a esta que me genera dudas...
+    ## Al menos uno debe ser verdadero
     for (k, h) in kh:
         courses = curricula[k].courses
         if len(courses) > 0:
@@ -76,17 +91,7 @@ def relation_ch_cd(ch, cd, ppd):
         clause = [-cd[prop]]
         clause.extend(aux)
         clauses.append(clause)
-            
     return clauses  
-
-# Retorna el dia al que pertenece la hora
-def day(h, periods_per_day):
-    return ceil((h+1)/periods_per_day) - 1 
-
-def hour_for_day(d, ppd):
-    start = d*ppd
-    end = start + ppd
-    return list(range(start, end))
 
 def get_ch(courses, hours, n_var, id_to_var):
     ch = {}
