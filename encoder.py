@@ -32,8 +32,20 @@ def encoder(instance: Instance):
     # Creacion de clausulas por disponibilidad
     clauses.extend(time_slot_availability(ch,unavailabilities, ppd ))
     clauses.extend(number_of_lectures(courses, ch, vpool))
+    clauses.extend(room_capacity(courses, rooms, cr))
     print(clauses, len(clauses))
     #print(vpool)
+
+def room_capacity(courses, rooms, cr):
+    clauses = []
+    for c in courses:
+        ns = courses[c].num_students
+        for r in rooms:
+            capacity = rooms[r].capacity
+            if ns > capacity:
+                clauses.append(-cr[(c, r)])
+
+    return clauses
 
 def number_of_lectures(courses, ch, vpool):
     clauses = []
@@ -44,7 +56,6 @@ def number_of_lectures(courses, ch, vpool):
         for h in hours:
             literals.append(ch[(c, h)])
         clauses.extend(exactly(literals=literals, k=k, vpool=vpool))
-
     return clauses
 
 def  time_slot_availability(ch, unavailabilities, ppd):
