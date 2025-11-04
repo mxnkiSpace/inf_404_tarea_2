@@ -1,12 +1,14 @@
 from classes_ctt import Instance, parse_ctt
 from utils import hour_for_day, day, map_teacher, exactly, at_least, is_first_slot_of_day, is_last_slot_of_day
 from pysat.formula import IDPool
-import time
+import time 
 
-def encoder(instance: Instance):
+def encoder(instance: Instance, type_sat:int = 0):
+    print(type_sat)
     id_to_var = {}
     n_var = 1
-    clauses = []
+    hard_clauses = []
+    soft_clauses = []
     ppd = instance.periods_per_day
     days = instance.num_days
     total_hours =  ppd * days
@@ -24,21 +26,28 @@ def encoder(instance: Instance):
     vpool = IDPool(start_from=max_id_original + 1)
     #print(vpool)
     # Creacion de clausulas a partir de relaciones
-    clauses.extend(relation_ch_cd(ch, cd, ppd)) 
-    clauses.extend(relation_ch_kh(ch, kh, curricula))
+    hard_clauses.extend(relation_ch_cd(ch, cd, ppd)) 
+    hard_clauses.extend(relation_ch_kh(ch, kh, curricula))
     # Creacion de clausulas a partir de colisiones
-    clauses.extend(curriculum_clashes(ch, curricula))
-    clauses.extend(teacher_clashes(courses, ch))
-    clauses.extend(room_clashes(ch, cr, courses, rooms))
+    hard_clauses.extend(curriculum_clashes(ch, curricula))
+    hard_clauses.extend(teacher_clashes(courses, ch))
+    hard_clauses.extend(room_clashes(ch, cr, courses, rooms))
     # Creacion de clausulas por disponibilidad
-    clauses.extend(time_slot_availability(ch,unavailabilities, ppd ))
-    clauses.extend(number_of_lectures(courses, ch, vpool))
-    clauses.extend(room_capacity(courses, rooms, cr))
-    clauses.extend(room_stability(courses, rooms, cr, vpool))
-    clauses.extend(min_working_days(courses, cd, vpool, days))
-    clauses.extend(isolated_lectures(kh, curricula, ppd, total_hours))
-    print(clauses, len(clauses))
-    #print(vpool)
+    hard_clauses.extend(time_slot_availability(ch,unavailabilities, ppd ))
+    hard_clauses.extend(number_of_lectures(courses, ch, vpool))
+    hard_clauses.extend(room_capacity(courses, rooms, cr))
+    hard_clauses.extend(room_stability(courses, rooms, cr, vpool))
+    soft_clauses.extend(min_working_days(courses, cd, vpool, days))
+    soft_clauses.extend(isolated_lectures(kh, curricula, ppd, total_hours))
+    """
+    type = 0: maxSAT
+    type = 1: Partial MaxSAT
+    """
+    if type_sat == 0:
+        hard_clauses.extend(soft_clauses)
+        return hard_clauses, vpool
+    elif type_sat == 1:
+        return hard_clauses, soft_clauses, vpool
 
 def isolated_lectures(kh, curricula, ppd, total_hours):
     clauses = []
@@ -290,4 +299,5 @@ def get_kh(curricula, hours, n_var, id_to_var):
 if __name__ == "__main__":
     print("HOLA")
     prueba = parse_ctt("toy.txt")
-    encoder(prueba)
+    (clauses,_) = encoder(prueba)
+    print(clauses)
