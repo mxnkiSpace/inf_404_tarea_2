@@ -7,7 +7,7 @@ def encoder(instance: Instance, type_sat:int = 0):
     id_to_var = {}
     vpool = IDPool(start_from=1)
     hard_clauses = []
-    soft_clauses = []
+    soft_clauses_weighted = [] 
     ppd = instance.periods_per_day
     days = instance.num_days
     total_hours =  ppd * days
@@ -31,18 +31,128 @@ def encoder(instance: Instance, type_sat:int = 0):
     hard_clauses.extend(time_slot_availability(ch,unavailabilities, ppd ))
     hard_clauses.extend(number_of_lectures(courses, ch, vpool))
     hard_clauses.extend(room_capacity(courses, rooms, cr))
-    hard_clauses.extend(room_stability(courses, rooms, cr, vpool))
-    soft_clauses.extend(min_working_days(courses, cd, vpool, days))
-    soft_clauses.extend(isolated_lectures(kh, curricula, ppd, total_hours))
+    hard_clauses.extend(number_of_lectures(courses, ch, vpool)) 
+    hard_clauses.extend(room_capacity(courses, rooms, cr))
     """
     type = 0: maxSAT
     type = 1: Partial MaxSAT
     """
     if type_sat == 0:
-        hard_clauses.extend(soft_clauses)
+        hard_clauses.extend(room_stability_hard_version(courses, rooms, cr, vpool))
+        hard_clauses.extend(min_working_days(courses, cd, vpool, days))
+        hard_clauses.extend(isolated_lectures(kh, curricula, ppd, total_hours))
         return hard_clauses, vpool
     elif type_sat == 1:
-        return hard_clauses, soft_clauses, vpool
+        soft_clauses_weighted.extend(room_stability_weighted(courses, rooms, cr, vpool))
+        new_hard_clauses_from_relaxation, weighted_min_days_clauses = min_working_days_weighted(courses, cd, vpool, days, hard_clauses)
+        hard_clauses.extend(new_hard_clauses_from_relaxation)
+        soft_clauses_weighted.extend(weighted_min_days_clauses)
+        
+        soft_clauses_weighted.extend(isolated_lectures_weighted(kh, curricula, ppd, total_hours))
+        
+        return hard_clauses, soft_clauses_weighted, vpool
+
+def isolated_lectures_weighted(kh, curricula, ppd, total_hours):
+    WEIGHT = 2
+    weighted_clauses = []
+    all_hours = range(total_hours)
+    for k_id in curricula.keys():
+        for h in all_hours:
+            kh_h_key = (k_id, h)
+            if kh_h_key in kh:
+                lit_kh_h = -kh[kh_h_key] 
+                clause = [lit_kh_h]
+                if is_first_slot_of_day(h, ppd):
+                    if (k_id, h + 1) in kh: 
+                        clause.append(kh[(k_id, h + 1)])
+                        weighted_clauses.append((WEIGHT, clause))
+                elif is_last_slot_of_day(h, ppd):
+                    if (k_id, h - 1) in kh:
+                        clause.append(kh[(k_id, h - 1)])
+                        weighted_clauses.append((WEIGHT, clause))
+                else:
+                    lit_kh_h_prev = kh.get((k_id, h - 1))
+                    lit_kh_h_next = kh.get((k_id, h + 1))
+                    
+                    if lit_kh_h_prev and lit_kh_h_next:
+                        clause.extend([lit_kh_h_prev, lit_kh_h_next])
+                        weighted_clauses.append((WEIGHT, clause))
+    return weighted_clauses
+
+def room_stability_weighted(courses, rooms, cr, vpool):
+    WEIGHT = 1
+    weighted_clauses = []
+    all_room_ids = list(rooms.keys())
+    for c_id in courses.keys():
+        literals = []
+        for r_id in all_room_ids:
+            cr_key = (c_id, r_id)
+            if cr_key in cr:
+                literals.append(cr[cr_key])
+        num_literals = len(literals)
+        if num_literals < 2:
+            continue
+        for i in range(num_literals):
+            for j in range(i + 1, num_literals):
+                lit_i = literals[i]
+                lit_j = literals[j]
+                clause = [-lit_i, -lit_j] 
+                weighted_clauses.append((WEIGHT, clause))
+    return weighted_clauses
+
+def min_working_days_weighted(courses, cd, vpool, num_days, hard_clauses_ref):
+    """
+    Min working days: Cost 5 for each day less than the minimum required. 
+    
+    Para implementar el costo variable (5 * (k - dias_reales)), se necesita:
+    1. Usar un codificador de cardinalidad (como Totalizer) que exponga las variables de salida (out_i).
+    2. Hacer soft la negación de las variables de salida: (5, [out_i]) para i = 1 to k-1.
+    
+    Dado que 'at_least' es una función externa, se usa la relajación simple de costo fijo 5:
+    Se toma el CNF original como HARD, se añade una variable de relajación $s_c$ a cada cláusula del CNF,
+    y se penaliza  -s_c con peso 5. Esto significa costo 5 por cualquier violación.
+    """
+    WEIGHT = 5
+    weighted_clauses = []
+    new_hard_clauses = [] 
+    all_days = range(num_days) 
+    
+    for c_id, course_obj in courses.items():
+        literals = []
+        k = course_obj.min_working_days 
+        
+        for d in all_days:
+            cd_key = (c_id, d)
+            if cd_key in cd:
+                literals.append(cd[cd_key])
+        
+        if literals and k > 0:
+            cnf_clauses = at_least(k, literals, vpool) 
+            
+            violation_literal = vpool.id() 
+            
+            new_hard_clauses.extend([clause + [violation_literal] for clause in cnf_clauses])
+        
+            weighted_clauses.append((WEIGHT, [-violation_literal]))
+            
+    return new_hard_clauses, weighted_clauses
+
+
+def room_stability_hard_version(courses, rooms, cr, vpool):
+    clauses = []
+    all_room_ids = rooms.keys()
+    
+    for c_id in courses.keys():
+        literals = []
+        for r_id in all_room_ids:
+            cr_key = (c_id, r_id)
+            if cr_key in cr:
+                literals.append(cr[cr_key])
+        if literals:
+            clauses.extend(exactly(literals=literals, k=1, vpool=vpool))
+            
+    return clauses
+
 
 def isolated_lectures(kh, curricula, ppd, total_hours):
     clauses = []
@@ -293,5 +403,7 @@ def get_kh(curricula, hours, vpool, id_to_var):
 if __name__ == "__main__":
     print("HOLA")
     prueba = parse_ctt("toy.txt")
-    (hard,_) = encoder(prueba, 0)
-    print(hard)
+    #(hard,_) = encoder(prueba, 0)
+    #print(hard)
+    (hard,soft, _) = encoder(prueba, 1)
+    print(soft)
