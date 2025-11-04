@@ -1,4 +1,4 @@
-# complete_encoder_corrected.py - Versión corregida
+# paper_accurate_encode.py - Implementación fiel al paper (Sección 4.4)
 
 import sys
 import time
@@ -8,6 +8,7 @@ from math import ceil
 from pysat.formula import IDPool, WCNF
 from pysat.card import CardEnc, EncType, ITotalizer
 from pysat.examples.rc2 import RC2
+
 
 # ============= CLASES =============
 @dataclass
@@ -158,30 +159,34 @@ def encoder(instance: Instance, type_sat: int = 0):
     cd, id_to_var = get_cd(courses, days, vpool, id_to_var)
     cr, id_to_var = get_cr(courses, rooms, vpool, id_to_var)
     kh, id_to_var = get_kh(curricula, total_hours, vpool, id_to_var)
+    chr_vars, id_to_var = get_chr(courses, rooms, total_hours, vpool, id_to_var)
 
     hard_clauses.extend(relation_ch_cd(ch, cd, ppd)) 
     hard_clauses.extend(relation_ch_kh(ch, kh, curricula))
+    hard_clauses.extend(relation_ch_chr(ch, chr_vars, courses, rooms, total_hours))
+    hard_clauses.extend(relation_cr_chr(cr, chr_vars, courses, rooms, total_hours))
 
     hard_clauses.extend(curriculum_clashes(ch, curricula, total_hours))
     hard_clauses.extend(teacher_clashes(courses, ch, total_hours))
-    hard_clauses.extend(room_clashes(ch, cr, courses, rooms, total_hours))
+    
+    hard_clauses.extend(room_clashes_with_chr(chr_vars, courses, rooms, total_hours))
 
     hard_clauses.extend(time_slot_availability(ch, unavailabilities, ppd))
     hard_clauses.extend(number_of_lectures(courses, ch, total_hours, vpool))
 
     if type_sat == 0:  # SAT puro: todo es hard
-        hard_clauses.extend(room_capacity_hard(courses, rooms, cr))
+        hard_clauses.extend(room_capacity_hard_chr(courses, rooms, chr_vars, total_hours))
         hard_clauses.extend(room_stability_hard(courses, rooms, cr, vpool))
         hard_clauses.extend(min_working_days_hard(courses, cd, days, vpool))
         hard_clauses.extend(isolated_lectures_hard(kh, curricula, ppd, total_hours))
         return hard_clauses, [], vpool
 
     elif type_sat == 1:  # MaxSAT: restricciones soft
-        soft_clauses_weighted.extend(room_capacity_soft(courses, rooms, cr))
+        soft_clauses_weighted.extend(room_capacity_soft_chr(courses, rooms, chr_vars, total_hours))
         
-        soft_clauses_weighted.extend(room_stability_soft(courses, rooms, cr, vpool))
+        soft_clauses_weighted.extend(room_stability_soft_paper(courses, rooms, cr, vpool))
         
-        soft_clauses_weighted.extend(min_working_days_soft(courses, cd, days, vpool))
+        soft_clauses_weighted.extend(min_working_days_soft_paper(courses, cd, days, vpool))
         
         soft_clauses_weighted.extend(isolated_lectures_soft(kh, curricula, ppd, total_hours))
         
@@ -224,6 +229,20 @@ def get_kh(curricula, hours, vpool, id_to_var):
             id_to_var[var_id] = ('kh', k, h)
     return kh, id_to_var
 
+def get_chr(courses, rooms, hours, vpool, id_to_var):
+    """
+    chr(c,h,r): "course c takes place in time slot h and in room r"
+    Según Sección 4.4 del paper
+    """
+    chr_vars = {}
+    for c in courses:
+        for h in range(hours):
+            for r in rooms:
+                var_id = vpool.id()
+                chr_vars[(c, h, r)] = var_id
+                id_to_var[var_id] = ('chr', c, h, r)
+    return chr_vars, id_to_var
+
 # ============= RELACIONES =============
 def relation_ch_cd(ch, cd, ppd):
     clauses = []
@@ -243,14 +262,12 @@ def relation_ch_cd(ch, cd, ppd):
 
 def relation_ch_kh(ch, kh, curricula):
     clauses = []
-    # Si curso c está en hora h, entonces curriculum k está en hora h
     for (c, h) in ch:
         for k, curr in curricula.items():
             if c in curr.courses:
                 if (k, h) in kh:
                     clauses.append([-ch[(c, h)], kh[(k, h)]])
     
-    # Si curriculum k está en hora h, al menos un curso de k está en h
     for (k, h) in kh:
         courses_k = curricula[k].courses
         clause = [-kh[(k, h)]]
@@ -258,6 +275,62 @@ def relation_ch_kh(ch, kh, curricula):
             if (c, h) in ch:
                 clause.append(ch[(c, h)])
         clauses.append(clause)
+    return clauses
+
+def relation_ch_chr(ch, chr_vars, courses, rooms, total_hours):
+    """
+    Relación entre ch y chr según Sección 4.4:
+    - Si chr(c,h,r) es true, entonces ch(c,h) debe ser true
+    - Si ch(c,h) es true, entonces al menos un chr(c,h,r) debe ser true
+    """
+    clauses = []
+    all_room_ids = list(rooms.keys())
+    
+    for c in courses:
+        for h in range(total_hours):
+            if (c, h) not in ch:
+                continue
+            
+            # Si chr(c,h,r) entonces ch(c,h)
+            for r in all_room_ids:
+                if (c, h, r) in chr_vars:
+                    clauses.append([-chr_vars[(c, h, r)], ch[(c, h)]])
+            
+            # Si ch(c,h) entonces existe algún r tal que chr(c,h,r)
+            clause = [-ch[(c, h)]]
+            for r in all_room_ids:
+                if (c, h, r) in chr_vars:
+                    clause.append(chr_vars[(c, h, r)])
+            clauses.append(clause)
+    
+    return clauses
+
+def relation_cr_chr(cr, chr_vars, courses, rooms, total_hours):
+    """
+    Relación entre cr y chr según Sección 4.4:
+    - Si chr(c,h,r) es true, entonces cr(c,r) debe ser true
+    - Si cr(c,r) es true, entonces existe algún h tal que chr(c,h,r) es true
+    """
+    clauses = []
+    all_room_ids = list(rooms.keys())
+    
+    for c in courses:
+        for r in all_room_ids:
+            if (c, r) not in cr:
+                continue
+            
+            # Si chr(c,h,r) entonces cr(c,r)
+            for h in range(total_hours):
+                if (c, h, r) in chr_vars:
+                    clauses.append([-chr_vars[(c, h, r)], cr[(c, r)]])
+            
+            # Si cr(c,r) entonces existe algún h tal que chr(c,h,r)
+            clause = [-cr[(c, r)]]
+            for h in range(total_hours):
+                if (c, h, r) in chr_vars:
+                    clause.append(chr_vars[(c, h, r)])
+            clauses.append(clause)
+    
     return clauses
 
 # ============= RESTRICCIONES DURAS =============
@@ -293,7 +366,12 @@ def teacher_clashes(courses, ch, total_hours):
                         clauses.append([-ch[(c_i, h)], -ch[(c_j, h)]])
     return clauses
 
-def room_clashes(ch, cr, courses_dict, rooms_dict, total_hours):
+def room_clashes_with_chr(chr_vars, courses_dict, rooms_dict, total_hours):
+    """
+    Room clashes usando chr según Sección 4.4:
+    Para cada par de cursos c, c', time slot h, y room r:
+    ¬chr(c,h,r) ∨ ¬chr(c',h,r)
+    """
     clauses = []
     all_course_ids = list(courses_dict.keys())
     all_room_ids = list(rooms_dict.keys())
@@ -305,9 +383,8 @@ def room_clashes(ch, cr, courses_dict, rooms_dict, total_hours):
                 for j in range(i + 1, num_courses):
                     c_i = all_course_ids[i]
                     c_j = all_course_ids[j]
-                    if (c_i, h) in ch and (c_j, h) in ch and (c_i, r) in cr and (c_j, r) in cr:
-                        clause = [-ch[(c_i, h)], -ch[(c_j, h)], -cr[(c_i, r)], -cr[(c_j, r)]]
-                        clauses.append(clause)
+                    if (c_i, h, r) in chr_vars and (c_j, h, r) in chr_vars:
+                        clauses.append([-chr_vars[(c_i, h, r)], -chr_vars[(c_j, h, r)]])
     return clauses
 
 def time_slot_availability(ch, unavailabilities, ppd):
@@ -330,13 +407,20 @@ def number_of_lectures(courses, ch, total_hours, vpool):
     return clauses
 
 # ============= RESTRICCIONES HARD (para SAT puro) =============
-def room_capacity_hard(courses, rooms, cr):
+def room_capacity_hard_chr(courses, rooms, chr_vars, total_hours):
+    """
+    Room capacity hard usando chr:
+    Para cada curso c, room r donde numStudents(c) > capacity(r),
+    y cada hour h: ¬chr(c,h,r)
+    """
     clauses = []
     for c_id, course in courses.items():
         ns = course.num_students
         for r_id, room in rooms.items():
-            if (c_id, r_id) in cr and ns > room.capacity:
-                clauses.append([-cr[(c_id, r_id)]])
+            if ns > room.capacity:
+                for h in range(total_hours):
+                    if (c_id, h, r_id) in chr_vars:
+                        clauses.append([-chr_vars[(c_id, h, r_id)]])
     return clauses
 
 def room_stability_hard(courses, rooms, cr, vpool):
@@ -389,19 +473,29 @@ def isolated_lectures_hard(kh, curricula, ppd, total_hours):
     return clauses
 
 # ============= RESTRICCIONES SOFT (para MaxSAT) =============
-def room_capacity_soft(courses, rooms, cr):
-    """Penaliza 1 por cada estudiante que no cabe en la sala"""
+def room_capacity_soft_chr(courses, rooms, chr_vars, total_hours):
+    """
+    Room capacity soft usando chr según Sección 4.4:
+    Para cada curso c, room r donde numStudents(c) > capacity(r),
+    y cada hour h: cláusula soft ¬chr(c,h,r) con peso (numStudents(c) - capacity(r))
+    """
     weighted_clauses = []
     for c_id, course in courses.items():
         ns = course.num_students
         for r_id, room in rooms.items():
-            if (c_id, r_id) in cr and ns > room.capacity:
+            if ns > room.capacity:
                 weight = ns - room.capacity
-                weighted_clauses.append((weight, [-cr[(c_id, r_id)]]))
+                for h in range(total_hours):
+                    if (c_id, h, r_id) in chr_vars:
+                        weighted_clauses.append((weight, [-chr_vars[(c_id, h, r_id)]]))
     return weighted_clauses
 
-def room_stability_soft(courses, rooms, cr, vpool):
-    """Penaliza 1 por cada sala extra usada (más allá de la primera)"""
+def room_stability_soft_paper(courses, rooms, cr, vpool):
+    """
+    Room stability soft según Sección 4.4:
+    Usa totalizer para contar cuántas salas usa cada curso.
+    Penaliza con peso 1 por cada sala extra (más allá de 1).
+    """
     weighted_clauses = []
     all_room_ids = list(rooms.keys())
     
@@ -412,21 +506,41 @@ def room_stability_soft(courses, rooms, cr, vpool):
                 literals.append(cr[(c_id, r_id)])
         
         if len(literals) <= 1:
+            # Si solo hay 0 o 1 sala, no hay penalización posible
+            if len(literals) == 1:
+                # Forzar que se use exactamente esa sala (hard)
+                weighted_clauses.append((0, literals))
             continue
         
-        # Al menos una sala debe ser asignada (hard)
-        weighted_clauses.append((0, literals))  # Peso 0 = hard en WCNF
+        # Crear totalizer para contar salas usadas
+        tot = ITotalizer(lits=literals, ubound=len(literals), top_id=vpool.top)
+        vpool._top = tot.top_id
         
-        # Penalizar usar más de una sala
-        for i in range(len(literals)):
-            for j in range(i + 1, len(literals)):
-                # Si ambas salas son usadas, costo de 1
-                weighted_clauses.append((1, [-literals[i], -literals[j]]))
+        # Al menos una sala debe ser usada (hard)
+        if len(tot.rhs) > 0:
+            weighted_clauses.append((0, [tot.rhs[0]]))
+        
+        # Penalizar usar más de 1 sala
+        # tot.rhs[i] es true si se usan al menos i+1 salas
+        # Queremos penalizar cuando tot.rhs[1] es true (>= 2 salas)
+        for i in range(1, len(tot.rhs)):
+            # Si tot.rhs[i] es true, significa que se usan >= i+1 salas
+            # Penalizar con peso 1
+            weighted_clauses.append((1, [-tot.rhs[i]]))
     
     return weighted_clauses
 
-def min_working_days_soft(courses, cd, days, vpool):
-    """Penaliza 5 por cada día menos del mínimo requerido"""
+def min_working_days_soft_paper(courses, cd, days, vpool):
+    """
+    Min working days soft según Sección 4.2:
+    Usa totalizer para contar días usados.
+    Para workingDays(c) = k, penaliza con peso 5:
+    - out_k (si se usan < k días)
+    - out_{k-1} (si se usan < k-1 días)
+    - ...
+    - out_2 (si se usan < 2 días)
+    No penalizamos out_1 porque siempre será true.
+    """
     weighted_clauses = []
     
     for c_id, course in courses.items():
@@ -440,18 +554,17 @@ def min_working_days_soft(courses, cd, days, vpool):
             continue
         
         # Crear totalizer para contar días usados
-        from pysat.card import ITotalizer
-        
         tot = ITotalizer(lits=literals, ubound=len(literals), top_id=vpool.top)
         vpool._top = tot.top_id
         
         # Penalizar por cada día menos de k
         # tot.rhs[i] es true si se usan al menos i+1 días
-        # Queremos penalizar cuando se usan menos de k días
-        for j in range(k):
-            # Si tot.rhs[j] es false, significa que se usan <= j días
-            # Penalizar con peso 5 por cada día faltante
+        # Si tot.rhs[k-1] es false, significa que se usan < k días (penalizar con 5)
+        # Si tot.rhs[k-2] es false, significa que se usan < k-1 días (penalizar con 5 más)
+        # etc.
+        for j in range(k - 1, 0, -1):  # desde k-1 hasta 1
             if j < len(tot.rhs):
+                # Penalizar si NO se alcanzan j+1 días
                 weighted_clauses.append((5, [tot.rhs[j]]))
     
     return weighted_clauses
@@ -484,6 +597,7 @@ def isolated_lectures_soft(kh, curricula, ppd, total_hours):
     
     return weighted_clauses
 
+
 def iterative_maxsat_solver(wcnf, timeout=300):
     """
     Solver iterativo simplificado que encuentra soluciones progresivamente mejores.
@@ -500,10 +614,6 @@ def iterative_maxsat_solver(wcnf, timeout=300):
     soft_clauses = []
     soft_weights = []
     
-    # wcnf.hard contiene las cláusulas hard
-    # wcnf.soft contiene las cláusulas soft
-    # wcnf.wght contiene los pesos (top_weight para hard, peso real para soft)
-    
     top_weight = max(wcnf.wght) if wcnf.wght else 1
     
     for i, clause in enumerate(wcnf.soft):
@@ -517,7 +627,6 @@ def iterative_maxsat_solver(wcnf, timeout=300):
     print(f"Hard clauses: {len(hard_clauses)}, Soft clauses: {len(soft_clauses)}")
     print(f"Total soft weight: {sum(soft_weights)}")
     
-    # Paso 1: Encontrar cualquier solución satisfacible
     print("\nStep 1: Finding initial feasible solution...")
     solver = Glucose3()
     
@@ -534,7 +643,6 @@ def iterative_maxsat_solver(wcnf, timeout=300):
     cost = 0
     
     for i, clause in enumerate(soft_clauses):
-        # Una cláusula está satisfecha si al menos un literal está en el modelo
         satisfied = any(lit in model_set for lit in clause)
         if not satisfied:
             cost += soft_weights[i]
@@ -544,10 +652,9 @@ def iterative_maxsat_solver(wcnf, timeout=300):
     elapsed = time.time() - start_time
     print(f"Initial solution found! Cost: {best_cost} (time: {elapsed:.2f}s)")
     
-    # Paso 2: Mejorar iterativamente
     print("\nStep 2: Improving solution iteratively...")
     iteration = 0
-    max_iterations = 100  # Límite de iteraciones
+    max_iterations = 100
     
     while iteration < max_iterations:
         elapsed = time.time() - start_time
@@ -563,26 +670,19 @@ def iterative_maxsat_solver(wcnf, timeout=300):
         
         print(f"  Iteration {iteration}: Searching for solution with cost < {best_cost}...", end=" ", flush=True)
         
-        # Crear nuevo solver con constraint de costo
         solver.delete()
         solver = Glucose3()
         
         for clause in hard_clauses:
             solver.add_clause(clause)
         
-        # Agregar soft clauses con variables de relajación
         max_var = max(max(abs(lit) for lit in clause) for clause in hard_clauses + soft_clauses)
         relaxation_vars = []
         
         for i, clause in enumerate(soft_clauses):
             relax_var = max_var + i + 1
             relaxation_vars.append((relax_var, soft_weights[i]))
-            # clause OR relax_var
             solver.add_clause(clause + [relax_var])
-        
-        # Agregar constraint: suma ponderada de vars de relajación < best_cost
-        # Esto es difícil sin PB constraints, así que usamos enfoque simple:
-        # Intentar encontrar cualquier solución y verificar su costo
         
         found_better = False
         attempts = 0
@@ -593,7 +693,6 @@ def iterative_maxsat_solver(wcnf, timeout=300):
             model = solver.get_model()
             model_set = set(model)
             
-            # Calcular costo de esta solución
             cost = 0
             for i, clause in enumerate(soft_clauses):
                 satisfied = any(lit in model_set for lit in clause)
@@ -608,7 +707,6 @@ def iterative_maxsat_solver(wcnf, timeout=300):
                 found_better = True
                 break
             else:
-                # Bloquear esta solución y buscar otra
                 blocking_clause = []
                 for i, (relax_var, _) in enumerate(relaxation_vars):
                     if relax_var in model_set:
@@ -631,10 +729,10 @@ def iterative_maxsat_solver(wcnf, timeout=300):
 # ============= MAIN =============
 if __name__ == "__main__":
     input_file = sys.argv[1] if len(sys.argv) > 1 else "toy.txt"
-    mode = int(sys.argv[2]) if len(sys.argv) > 2 else 1  # 0=SAT, 1=MaxSAT
-    timeout = int(sys.argv[3]) if len(sys.argv) > 3 else 300  # timeout en segundos
+    mode = int(sys.argv[2]) if len(sys.argv) > 2 else 1
+    timeout = int(sys.argv[3]) if len(sys.argv) > 3 else 300
     
-    print(f"--- Running Encoder ({'SAT' if mode == 0 else 'MaxSAT'} mode) on: {input_file} ---")
+    print(f"--- Running Paper-Accurate Encoder ({'SAT' if mode == 0 else 'MaxSAT'} mode) on: {input_file} ---")
 
     instance = parse_ctt(input_file)
     
@@ -652,7 +750,7 @@ if __name__ == "__main__":
     print(f"\nGenerated {len(hard_clauses)} hard and {len(soft_clauses_weighted)} soft clauses in {encoding_time:.2f}s.")
     print(f"Total variables: {vpool.top}")
 
-    if mode == 0:  # SAT puro
+    if mode == 0:
         print("\nPreparing CNF formula...")
         from pysat.solvers import Glucose3
         
@@ -671,11 +769,10 @@ if __name__ == "__main__":
             print(f"\nUNSAT! No solution exists. Search terminated in {solving_time:.2f}s.")
         solver.delete()
     
-    else:  # MaxSAT
+    else:
         print("\nPreparing WCNF formula...")
         wcnf = WCNF()
         
-        # Top weight (mayor que la suma de todos los pesos soft)
         top_weight = sum(w for w, _ in soft_clauses_weighted) + 1
         
         for clause in hard_clauses:
