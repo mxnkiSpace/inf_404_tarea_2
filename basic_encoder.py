@@ -32,19 +32,17 @@ def encoder(instance: Instance, type_sat:int = 0):
     hard_clauses.extend(time_slot_availability(ch,unavailabilities, ppd ))
     hard_clauses.extend(number_of_lectures(courses, ch, vpool))
     hard_clauses.extend(room_capacity(courses, rooms, cr))
-    hard_clauses.extend(number_of_lectures(courses, ch, vpool)) 
-    hard_clauses.extend(room_capacity(courses, rooms, cr))
+    hard_clauses.extend(room_stability_hard_version(courses, rooms, cr, vpool))
     """
     type = 0: maxSAT
     type = 1: Partial MaxSAT
     """
     if type_sat == 0:
-        hard_clauses.extend(room_stability_hard_version(courses, rooms, cr, vpool))
         hard_clauses.extend(min_working_days(courses, cd, vpool, days))
         hard_clauses.extend(isolated_lectures(kh, curricula, ppd, total_hours))
         return hard_clauses, vpool
     elif type_sat == 1:
-        soft_clauses_weighted.extend(room_stability_weighted(courses, rooms, cr, vpool))
+        #soft_clauses_weighted.extend(room_stability_weighted(courses, rooms, cr, vpool))
         new_hard_clauses_from_relaxation, weighted_min_days_clauses = min_working_days_weighted(courses, cd, vpool, days)
         hard_clauses.extend(new_hard_clauses_from_relaxation)
         soft_clauses_weighted.extend(weighted_min_days_clauses)
@@ -261,19 +259,20 @@ def room_clashes(ch, cr, courses_dict, rooms_dict):
 
 def teacher_clashes(courses, ch):
     clauses = []
-    c = list(courses.keys())
-    num_courses = len(c)
     teacher_map = map_teacher(courses=courses)
     hours = [h for (c, h) in ch.keys()]
-    for _, courses_list in teacher_map.items():
+    
+    for _, courses_list in teacher_map.items(): 
         num_courses = len(courses_list)
         if num_courses < 2:
             continue
+            
         for h in hours:
             for i in range(num_courses):
                 for j in range(i+1, num_courses):
-                    c_i = c[i]
-                    c_j = c[j]
+                    c_i = courses_list[i] 
+                    c_j = courses_list[j] 
+                    
                     if (c_i, h) in ch and (c_j, h) in ch:
                         id_ci_h = ch[(c_i, h)]
                         id_cj_h = ch[(c_j, h)]
