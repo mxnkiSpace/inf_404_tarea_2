@@ -1,6 +1,7 @@
 from classes_ctt import Instance, parse_ctt
 from utils import hour_for_day, day, map_teacher, exactly, at_least, is_first_slot_of_day, is_last_slot_of_day
 from pysat.formula import IDPool
+from pysat.card import CardEnc, ITotalizer
 import time 
 
 def encoder(instance: Instance, type_sat:int = 0):
@@ -44,7 +45,7 @@ def encoder(instance: Instance, type_sat:int = 0):
         return hard_clauses, vpool
     elif type_sat == 1:
         soft_clauses_weighted.extend(room_stability_weighted(courses, rooms, cr, vpool))
-        new_hard_clauses_from_relaxation, weighted_min_days_clauses = min_working_days_weighted(courses, cd, vpool, days, hard_clauses)
+        new_hard_clauses_from_relaxation, weighted_min_days_clauses = min_working_days_weighted(courses, cd, vpool, days)
         hard_clauses.extend(new_hard_clauses_from_relaxation)
         soft_clauses_weighted.extend(weighted_min_days_clauses)
         
@@ -100,42 +101,29 @@ def room_stability_weighted(courses, rooms, cr, vpool):
                 weighted_clauses.append((WEIGHT, clause))
     return weighted_clauses
 
-def min_working_days_weighted(courses, cd, vpool, num_days, hard_clauses_ref):
-    """
-    Min working days: Cost 5 for each day less than the minimum required. 
-    
-    Para implementar el costo variable (5 * (k - dias_reales)), se necesita:
-    1. Usar un codificador de cardinalidad (como Totalizer) que exponga las variables de salida (out_i).
-    2. Hacer soft la negación de las variables de salida: (5, [out_i]) para i = 1 to k-1.
-    
-    Dado que 'at_least' es una función externa, se usa la relajación simple de costo fijo 5:
-    Se toma el CNF original como HARD, se añade una variable de relajación $s_c$ a cada cláusula del CNF,
-    y se penaliza  -s_c con peso 5. Esto significa costo 5 por cualquier violación.
-    """
+
+def min_working_days_weighted(courses, cd, vpool, num_days):
+    # Funcion compleja
+    hard_clauses = []
+    weighted_soft_clauses = []
     WEIGHT = 5
-    weighted_clauses = []
-    new_hard_clauses = [] 
-    all_days = range(num_days) 
-    
+    all_days = range(num_days)
     for c_id, course_obj in courses.items():
         literals = []
-        k = course_obj.min_working_days 
-        
+        k = course_obj.min_working_days
         for d in all_days:
-            cd_key = (c_id, d)
-            if cd_key in cd:
-                literals.append(cd[cd_key])
-        
-        if literals and k > 0:
-            cnf_clauses = at_least(k, literals, vpool) 
-            
-            violation_literal = vpool.id() 
-            
-            new_hard_clauses.extend([clause + [violation_literal] for clause in cnf_clauses])
-        
-            weighted_clauses.append((WEIGHT, [-violation_literal]))
-            
-    return new_hard_clauses, weighted_clauses
+            if (c_id, d) in cd:
+                literals.append(cd[(c_id, d)])
+        if not literals or k < 2:
+            continue
+        tot = ITotalizer(lits=literals, ubound=len(literals))
+        hard_clauses.extend(tot.cnf.clauses)
+        for i in range(k, 1, -1):
+            rhs_index = i - 1
+            if rhs_index < len(tot.rhs):
+                violation_literal = tot.rhs[rhs_index]
+                weighted_soft_clauses.append((WEIGHT, [violation_literal]))
+    return hard_clauses, weighted_soft_clauses
 
 
 def room_stability_hard_version(courses, rooms, cr, vpool):
