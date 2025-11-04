@@ -4,9 +4,8 @@ from pysat.formula import IDPool
 import time 
 
 def encoder(instance: Instance, type_sat:int = 0):
-    print(type_sat)
     id_to_var = {}
-    n_var = 1
+    vpool = IDPool(start_from=1)
     hard_clauses = []
     soft_clauses = []
     ppd = instance.periods_per_day
@@ -17,14 +16,10 @@ def encoder(instance: Instance, type_sat:int = 0):
     rooms = instance.rooms
     unavailabilities = instance.unavailabilities
     # Creacion de las variables
-    ch, n_var, id_to_var = get_ch(courses, total_hours, n_var, id_to_var)
-    cd, n_var, id_to_var = get_cd(courses, instance.num_days, n_var, id_to_var)
-    cr, n_var, id_to_var = get_cr(courses, instance.rooms, n_var, id_to_var)
-    kh, n_var, id_to_var = get_kh(instance.curricula, total_hours, n_var, id_to_var)
-    #Manejo de variables con PySAT
-    max_id_original = n_var - 1
-    vpool = IDPool(start_from=max_id_original + 1)
-    #print(vpool)
+    ch, id_to_var = get_ch(courses, total_hours, vpool, id_to_var)
+    cd, id_to_var = get_cd(courses, instance.num_days, vpool, id_to_var)
+    cr, id_to_var = get_cr(courses, instance.rooms, vpool, id_to_var)
+    kh, id_to_var = get_kh(curricula, total_hours, vpool, id_to_var)
     # Creacion de clausulas a partir de relaciones
     hard_clauses.extend(relation_ch_cd(ch, cd, ppd)) 
     hard_clauses.extend(relation_ch_kh(ch, kh, curricula))
@@ -72,8 +67,7 @@ def isolated_lectures(kh, curricula, ppd, total_hours):
                     lit_kh_h_next = kh.get((k_id, h + 1))
                     
                     if lit_kh_h_prev and lit_kh_h_next:
-                        clauses.append([lit_kh_h, lit_kh_h_prev, lit_kh_h_next])
-                        
+                        clauses.append([lit_kh_h, lit_kh_h_prev, lit_kh_h_next])       
     return clauses
 
 def min_working_days(courses, cd, vpool, num_days):
@@ -260,44 +254,44 @@ def relation_ch_cd(ch, cd, ppd):
         clauses.append(clause)
     return clauses  
 
-def get_ch(courses, hours, n_var, id_to_var):
+def get_ch(courses, hours, vpool, id_to_var):
     ch = {}
     for c in courses:
         for h in range(hours):
-            ch[(c, h)] = n_var
-            id_to_var[n_var] = ('ch', c, h)
-            n_var += 1
-    return ch, n_var, id_to_var
+            var_id = vpool.id()
+            ch[(c, h)] = var_id
+            id_to_var[var_id] = ('ch', c, h)
+    return ch, id_to_var
 
-def get_cd(courses, days, n_var, id_to_var):
+def get_cd(courses, days, vpool, id_to_var):
     cd = {}
     for c in courses:
         for d in range(days):
-            cd[(c, d)] = n_var
-            id_to_var[n_var] = ('cd', c, d)
-            n_var += 1
-    return cd, n_var, id_to_var
+            var_id = vpool.id()
+            cd[(c, d)] = var_id
+            id_to_var[var_id] = ('cd', c, d)
+    return cd, id_to_var
 
-def get_cr(courses, rooms, n_var, id_to_var):
+def get_cr(courses, rooms, vpool, id_to_var):
     cr = {}
     for c in courses:
         for r in rooms:
-            cr[(c, r)] = n_var
-            id_to_var[n_var] = ('cr', c, r)
-            n_var += 1
-    return cr, n_var, id_to_var
+            var_id = vpool.id()
+            cr[(c, r)] = var_id
+            id_to_var[var_id] = ('cr', c, r)
+    return cr, id_to_var
 
-def get_kh(curricula, hours, n_var, id_to_var):
+def get_kh(curricula, hours, vpool, id_to_var):
     kh = {}
     for k in curricula:
         for h in range(hours):
-            kh[(k, h)] = n_var
-            id_to_var[n_var] = ('kh', k, h)
-            n_var += 1
-    return kh, n_var, id_to_var
+            var_id = vpool.id()
+            kh[(k, h)] = var_id
+            id_to_var[var_id] = ('kh', k, h)
+    return kh, id_to_var
 
 if __name__ == "__main__":
     print("HOLA")
     prueba = parse_ctt("toy.txt")
-    (clauses,_) = encoder(prueba)
-    print(clauses)
+    (hard,_) = encoder(prueba, 0)
+    print(hard)
