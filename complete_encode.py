@@ -1,452 +1,273 @@
-from classes_ctt import Instance, parse_ctt
-from utils import hour_for_day, day, map_teacher, exactly, at_least, is_first_slot_of_day, is_last_slot_of_day
-from pysat.formula import IDPool
+# Archivo: complete_encode.py
+
+import sys
+import time
+from classes_ctt import parse_ctt, Instance
+from utils import (hour_for_day, day, map_teacher, exactly, at_least,
+                   is_first_slot_of_day, is_last_slot_of_day)
+from pysat.formula import IDPool, WCNF
 from pysat.card import CardEnc, ITotalizer
-import time 
+from pysat.examples.rc2 import RC2
+
+#==============================================================================
+# FUNCIONES SUAVES (WEIGHTED) - Se usan solo en modo MaxSAT
+#==============================================================================
+
+def room_stability_weighted(courses, rooms, cr, vpool):
+    hard_clauses, weighted_soft_clauses = [], []
+    WEIGHT = 1
+    for c_id in courses:
+        literals = [cr[(c_id, r_id)] for r_id in rooms if (c_id, r_id) in cr]
+        if len(literals) > 1:
+            tot = ITotalizer(lits=literals, ubound=len(literals))
+            hard_clauses.extend(tot.cnf.clauses)
+            if tot.top_id > vpool.top: vpool.top = tot.top_id
+            for i in range(1, len(literals)):
+                if i < len(tot.rhs):
+                    weighted_soft_clauses.append((WEIGHT, [-tot.rhs[i]]))
+    return hard_clauses, weighted_soft_clauses
+
+def room_capacity_weighted(courses, rooms, chr_vars):
+    weighted_soft_clauses = []
+    for (c_id, h, r_id), lit_chr in chr_vars.items():
+        if courses[c_id].num_students > rooms[r_id].capacity:
+            cost = courses[c_id].num_students - rooms[r_id].capacity
+            weighted_soft_clauses.append((cost, [-lit_chr]))
+    return weighted_soft_clauses
+
+def min_working_days_weighted(courses, cd, vpool, num_days):
+    hard_clauses, weighted_soft_clauses = [], []
+    WEIGHT = 5
+    for c_id, course_obj in courses.items():
+        literals = [cd[(c_id, d)] for d in range(num_days) if (c_id, d) in cd]
+        k = course_obj.min_working_days
+        if literals and k > 1:
+            tot = ITotalizer(lits=literals, ubound=len(literals))
+            hard_clauses.extend(tot.cnf.clauses)
+            if tot.top_id > vpool.top: vpool.top = tot.top_id
+            for i in range(2, k + 1):
+                if (i - 1) < len(tot.rhs):
+                    weighted_soft_clauses.append((WEIGHT, [tot.rhs[i - 1]]))
+    return hard_clauses, weighted_soft_clauses
+
+def isolated_lectures_weighted(kh, curricula, ppd, total_hours):
+    weighted_clauses = []
+    WEIGHT = 2
+    for k_id in curricula:
+        for h in range(total_hours):
+            if (k_id, h) in kh:
+                clause = [-kh[(k_id, h)]]
+                if not is_first_slot_of_day(h, ppd) and (k_id, h - 1) in kh:
+                    clause.append(kh[(k_id, h - 1)])
+                if not is_last_slot_of_day(h, ppd) and (k_id, h + 1) in kh:
+                    clause.append(kh[(k_id, h + 1)])
+                if len(clause) > 1:
+                    weighted_clauses.append((WEIGHT, clause))
+    return weighted_clauses
+
+#==============================================================================
+# ENCODER PRINCIPAL - Con la lógica correcta
+#==============================================================================
 
 def encoder(instance: Instance, type_sat:int = 0):
-    id_to_var = {}
     vpool = IDPool(start_from=1)
     hard_clauses = []
-    soft_clauses_weighted = [] 
-    ppd = instance.periods_per_day
-    days = instance.num_days
+    soft_clauses_weighted = []
+    
+    courses, rooms, curricula = instance.courses, instance.rooms, instance.curricula
+    ppd, days = instance.periods_per_day, instance.num_days
     total_hours = ppd * days
-    courses = instance.courses
-    curricula = instance.curricula
-    rooms = instance.rooms
-    unavailabilities = instance.unavailabilities
-    # Creacion de las variables
-    ch, id_to_var = get_ch(courses, total_hours, vpool, id_to_var)
-    cd, id_to_var = get_cd(courses, instance.num_days, vpool, id_to_var)
-    cr, id_to_var = get_cr(courses, instance.rooms, vpool, id_to_var)
-    kh, id_to_var = get_kh(curricula, total_hours, vpool, id_to_var)
-    chr_vars, id_to_var = get_chr(courses, total_hours, rooms, vpool, id_to_var)
-    ###
+
+    ch = get_ch(courses, total_hours, vpool)
+    cd = get_cd(courses, days, vpool)
+    cr = get_cr(courses, rooms, vpool)
+    kh = get_kh(curricula, total_hours, vpool)
+    chr_vars = get_chr(courses, total_hours, rooms, vpool)
+
+    # --- Restricciones Siempre Duras ---
     hard_clauses.extend(relation_ch_chr(ch, chr_vars, rooms))
     hard_clauses.extend(relation_cr_chr(cr, chr_vars, total_hours))
-    ###
-    # Creacion de clausulas a partir de relaciones
-    hard_clauses.extend(relation_ch_cd(ch, cd, ppd)) 
+    hard_clauses.extend(relation_ch_cd(ch, cd, ppd))
     hard_clauses.extend(relation_ch_kh(ch, kh, curricula))
-    # Creacion de clausulas a partir de colisiones
-    hard_clauses.extend(curriculum_clashes(ch, curricula))
-    hard_clauses.extend(teacher_clashes(courses, ch))
+    hard_clauses.extend(curriculum_clashes(ch, curricula, total_hours))
+    hard_clauses.extend(teacher_clashes(courses, ch, total_hours))
     hard_clauses.extend(room_clashes(chr_vars))
-    # Creacion de clausulas por disponibilidad
-    hard_clauses.extend(time_slot_availability(ch,unavailabilities, ppd ))
-    hard_clauses.extend(number_of_lectures(courses, ch, vpool))
+    hard_clauses.extend(time_slot_availability(ch, instance.unavailabilities, ppd))
+    hard_clauses.extend(number_of_lectures(courses, ch, total_hours, vpool))
 
-    hard_clauses.extend(room_capacity(courses, rooms, chr_vars)) 
-    hard_clauses.extend(room_stability_hard_version(courses, rooms, cr, vpool))
-    
-    """
-    type = 0: maxSAT
-    type = 1: Partial MaxSAT
-    """
     if type_sat == 0:
+        # MODO SAT: Añadir versiones duras de las 4 restricciones
         hard_clauses.extend(min_working_days(courses, cd, vpool, days))
         hard_clauses.extend(isolated_lectures(kh, curricula, ppd, total_hours))
-        return hard_clauses, vpool
+        hard_clauses.extend(room_stability_hard_version(courses, rooms, cr, vpool))
+        hard_clauses.extend(room_capacity(courses, rooms, chr_vars))
+        return hard_clauses, None, vpool
+    
     elif type_sat == 1:
-        new_hard_clauses_from_relaxation, weighted_min_days_clauses = min_working_days_weighted(courses, cd, vpool, days) 
-        hard_clauses.extend(new_hard_clauses_from_relaxation)
-        soft_clauses_weighted.extend(weighted_min_days_clauses)
-
+        # MODO MAXSAT: Añadir versiones suaves de las 4 restricciones
+        new_hard, new_soft = min_working_days_weighted(courses, cd, vpool, days)
+        hard_clauses.extend(new_hard)
+        soft_clauses_weighted.extend(new_soft)
+        
         soft_clauses_weighted.extend(isolated_lectures_weighted(kh, curricula, ppd, total_hours))
+        
+        new_hard, new_soft = room_stability_weighted(courses, rooms, cr, vpool)
+        hard_clauses.extend(new_hard)
+        soft_clauses_weighted.extend(new_soft)
+        
+        soft_clauses_weighted.extend(room_capacity_weighted(courses, rooms, chr_vars))
+        
         return hard_clauses, soft_clauses_weighted, vpool
 
+#==============================================================================
+# FUNCIONES AUXILIARES (Duras y de creación de variables)
+#==============================================================================
 
+# --- Versiones Duras ---
 def room_stability_hard_version(courses, rooms, cr, vpool):
     clauses = []
-    all_room_ids = rooms.keys()
-    for c_id in courses.keys():
-        literals = []
-        for r_id in all_room_ids:
-            cr_key = (c_id, r_id)
-            if cr_key in cr:
-                literals.append(cr[cr_key])
-        if literals:
-            clauses.extend(exactly(literals=literals, k=1, vpool=vpool))
+    for c_id in courses:
+        lits = [cr[(c_id, r_id)] for r_id in rooms if (c_id, r_id) in cr]
+        if lits: clauses.extend(CardEnc.equals(lits=lits, bound=1, vpool=vpool).clauses)
     return clauses
 
 def room_capacity(courses, rooms, chr_vars):
+    return [[-lit_chr] for (c_id, h, r_id), lit_chr in chr_vars.items() if courses[c_id].num_students > rooms[r_id].capacity]
+
+def isolated_lectures(kh, curricula, ppd, total_hours):
     clauses = []
-    for (c_id, h, r_id), lit_chr in chr_vars.items():
-        course_obj = courses[c_id]
-        room_obj = rooms[r_id]
-        num_students = course_obj.num_students
-        capacity = room_obj.capacity
-        if num_students > capacity:
-            clauses.append([-lit_chr])
+    for k_id in curricula:
+        for h in range(total_hours):
+            if (k_id, h) in kh:
+                clause = [-kh[(k_id, h)]]
+                if not is_first_slot_of_day(h, ppd) and (k_id, h - 1) in kh: clause.append(kh[(k_id, h - 1)])
+                if not is_last_slot_of_day(h, ppd) and (k_id, h + 1) in kh: clause.append(kh[(k_id, h + 1)])
+                if len(clause) > 1: clauses.append(clause)
     return clauses
 
+def min_working_days(courses, cd, vpool, num_days):
+    clauses = []
+    for c_id, course in courses.items():
+        lits = [cd[(c_id, d)] for d in range(num_days) if (c_id, d) in cd]
+        if lits and course.min_working_days > 0:
+            clauses.extend(CardEnc.atleast(lits=lits, bound=course.min_working_days, vpool=vpool).clauses)
+    return clauses
+
+# --- Restricciones Siempre Duras ---
 def room_clashes(chr_vars):
     clauses = []
     chr_by_hr = {}
-    for (c, h, r), lit_chr in chr_vars.items():
-        key = (h, r)
-        if key not in chr_by_hr:
-            chr_by_hr[key] = []
-        chr_by_hr[key].append(lit_chr)
-    for (h, r), literals in chr_by_hr.items():
-        num_literals = len(literals)       
-        if num_literals < 2:
-            continue
-        for i in range(num_literals):
-            for j in range(i + 1, num_literals):
-                lit_i = literals[i]
-                lit_j = literals[j]
-                clause = [-lit_i, -lit_j] 
-                clauses.append(clause)        
+    for (c, h, r), lit in chr_vars.items():
+        chr_by_hr.setdefault((h, r), []).append(lit)
+    for lits in chr_by_hr.values():
+        if len(lits) > 1: clauses.extend(CardEnc.atmost(lits=lits, bound=1).clauses)
     return clauses
-
 
 def relation_ch_chr(ch, chr_vars, rooms):
     clauses = []
-    all_room_ids = list(rooms.keys())
     for (c, h), lit_ch in ch.items():
-        or_clause_literals = []
-        clause_impl_1 = [-lit_ch] 
-        for r in all_room_ids:
-            chr_key = (c, h, r)
-            if chr_key in chr_vars:
-                lit_chr = chr_vars[chr_key]
-                clause_impl_1.append(lit_chr)
-                clauses.append([-lit_chr, lit_ch])
-        if len(clause_impl_1) > 1: 
-            clauses.append(clause_impl_1)
-            
+        lits = [chr_vars[(c, h, r)] for r in rooms if (c, h, r) in chr_vars]
+        clauses.append([-lit_ch] + lits)
+        for lit_chr in lits: clauses.append([-lit_chr, lit_ch])
     return clauses
 
 def relation_cr_chr(cr, chr_vars, total_hours):
     clauses = []
     for (c, r), lit_cr in cr.items():
-        clause_impl_1 = [-lit_cr] 
+        lits = [chr_vars[(c, h, r)] for h in range(total_hours) if (c, h, r) in chr_vars]
+        clauses.append([-lit_cr] + lits)
+        for lit_chr in lits: clauses.append([-lit_chr, lit_cr])
+    return clauses
+
+def number_of_lectures(courses, ch, total_hours, vpool):
+    clauses = []
+    for c_id, course in courses.items():
+        lits = [ch[(c_id, h)] for h in range(total_hours) if (c_id, h) in ch]
+        clauses.extend(CardEnc.equals(lits=lits, bound=course.num_lectures, vpool=vpool).clauses)
+    return clauses
+
+def time_slot_availability(ch, unavailabilities, ppd):
+    return [[-ch[(u.course_id, u.day * ppd + u.day_period)]] for u in unavailabilities]
+
+def teacher_clashes(courses, ch, total_hours):
+    clauses = []
+    teacher_map = map_teacher(courses)
+    for course_list in teacher_map.values():
+        if len(course_list) > 1:
+            for h in range(total_hours):
+                lits = [ch[(c, h)] for c in course_list if (c, h) in ch]
+                if len(lits) > 1: clauses.extend(CardEnc.atmost(lits=lits, bound=1).clauses)
+    return clauses
+
+def curriculum_clashes(ch, curricula, total_hours):
+    clauses = []
+    for curriculum in curricula.values():
         for h in range(total_hours):
-            chr_key = (c, h, r)
-            if chr_key in chr_vars:
-                lit_chr = chr_vars[chr_key]
-                clause_impl_1.append(lit_chr)
-                clauses.append([-lit_chr, lit_cr])
-        if len(clause_impl_1) > 1:
-            clauses.append(clause_impl_1)
-    return clauses
-
-def isolated_lectures_weighted(kh, curricula, ppd, total_hours):
-    WEIGHT = 2
-    weighted_clauses = []
-    all_hours = range(total_hours)
-    for k_id in curricula.keys():
-        for h in all_hours:
-            kh_h_key = (k_id, h)
-            if kh_h_key in kh:
-                lit_kh_h = -kh[kh_h_key] 
-                clause = [lit_kh_h]
-                if is_first_slot_of_day(h, ppd):
-                    if (k_id, h + 1) in kh: 
-                        clause.append(kh[(k_id, h + 1)])
-                        weighted_clauses.append((WEIGHT, clause))
-                elif is_last_slot_of_day(h, ppd):
-                    if (k_id, h - 1) in kh:
-                        clause.append(kh[(k_id, h - 1)])
-                        weighted_clauses.append((WEIGHT, clause))
-                else:
-                    lit_kh_h_prev = kh.get((k_id, h - 1))
-                    lit_kh_h_next = kh.get((k_id, h + 1))
-                    
-                    if lit_kh_h_prev and lit_kh_h_next:
-                        clause.extend([lit_kh_h_prev, lit_kh_h_next])
-                        weighted_clauses.append((WEIGHT, clause))
-    return weighted_clauses
-
-def room_stability_weighted(courses, rooms, cr, vpool):
-    WEIGHT = 1
-    weighted_clauses = []
-    all_room_ids = list(rooms.keys())
-    for c_id in courses.keys():
-        literals = []
-        for r_id in all_room_ids:
-            cr_key = (c_id, r_id)
-            if cr_key in cr:
-                literals.append(cr[cr_key])
-        num_literals = len(literals)
-        if num_literals < 2:
-            continue
-        for i in range(num_literals):
-            for j in range(i + 1, num_literals):
-                lit_i = literals[i]
-                lit_j = literals[j]
-                clause = [-lit_i, -lit_j] 
-                weighted_clauses.append((WEIGHT, clause))
-    return weighted_clauses
-
-
-def min_working_days_weighted(courses, cd, vpool, num_days):
-    # Funcion compleja
-    hard_clauses = []
-    weighted_soft_clauses = []
-    WEIGHT = 5
-    all_days = range(num_days)
-    for c_id, course_obj in courses.items():
-        literals = []
-        k = course_obj.min_working_days
-        for d in all_days:
-            if (c_id, d) in cd:
-                literals.append(cd[(c_id, d)])
-        if not literals or k < 2:
-            continue
-        tot = ITotalizer(lits=literals, ubound=len(literals))
-        hard_clauses.extend(tot.cnf.clauses)
-        for i in range(k, 1, -1):
-            rhs_index = i - 1
-            if rhs_index < len(tot.rhs):
-                violation_literal = tot.rhs[rhs_index]
-                weighted_soft_clauses.append((WEIGHT, [violation_literal]))
-    return hard_clauses, weighted_soft_clauses
-
-
-def room_stability_hard_version(courses, rooms, cr, vpool):
-    clauses = []
-    all_room_ids = rooms.keys()
-    
-    for c_id in courses.keys():
-        literals = []
-        for r_id in all_room_ids:
-            cr_key = (c_id, r_id)
-            if cr_key in cr:
-                literals.append(cr[cr_key])
-        if literals:
-            clauses.extend(exactly(literals=literals, k=1, vpool=vpool))
-            
-    return clauses
-
-
-def isolated_lectures(kh, curricula, ppd, total_hours):
-    clauses = []
-    all_hours = range(total_hours)
-    
-    for k_id in curricula.keys():
-        for h in all_hours:
-            kh_h_key = (k_id, h)
-            if kh_h_key in kh:
-                lit_kh_h = -kh[kh_h_key] 
-                
-                if is_first_slot_of_day(h, ppd):
-                    if (k_id, h + 1) in kh: 
-                        clauses.append([lit_kh_h, kh[(k_id, h + 1)]])
-
-                elif is_last_slot_of_day(h, ppd):
-                    if (k_id, h - 1) in kh:
-                        clauses.append([lit_kh_h, kh[(k_id, h - 1)]])
-                
-                else:
-                    lit_kh_h_prev = kh.get((k_id, h - 1))
-                    lit_kh_h_next = kh.get((k_id, h + 1))
-                    
-                    if lit_kh_h_prev and lit_kh_h_next:
-                        clauses.append([lit_kh_h, lit_kh_h_prev, lit_kh_h_next])       
-    return clauses
-
-def min_working_days(courses, cd, vpool, num_days):
-    clauses = []
-    all_days = range(num_days) 
-    
-    for c_id, course_obj in courses.items():
-        literals = []
-        k = course_obj.min_working_days 
-        for d in all_days:
-            cd_key = (c_id, d)
-            if cd_key in cd:
-                literals.append(cd[cd_key])
-        if literals and k > 0:
-            cnf = at_least(k, literals, vpool)
-            clauses.extend(cnf)
-            
-    return clauses
-
-
-def room_stability(courses, rooms, cr, vpool):
-    clauses = []
-    all_room_ids = rooms.keys()
-    
-    for c_id in courses.keys():
-        literals = []
-        for r_id in all_room_ids:
-            cr_key = (c_id, r_id)
-            if cr_key in cr:
-                literals.append(cr[cr_key])
-        if literals:
-            cnf = exactly(literals=literals, k=1, vpool=vpool)
-            clauses.extend(cnf)
-            
-    return clauses
-
-def number_of_lectures(courses, ch, vpool):
-    clauses = []
-    hours = {h for (c, h) in ch.keys()}
-    for c in courses:
-        literals = []
-        k = courses[c].num_lectures
-        for h in hours:
-            literals.append(ch[(c, h)])
-        clauses.extend(exactly(literals=literals, k=k, vpool=vpool))
-    return clauses
-
-def  time_slot_availability(ch, unavailabilities, ppd):
-    clauses = []
-    for i in unavailabilities:
-        course, day, period = i.course_id, i.day, i.day_period
-        hour = day * ppd + period 
-        clauses.append([-ch[(course, hour)]])
-    return clauses
-
-
-def teacher_clashes(courses, ch):
-    clauses = []
-    teacher_map = map_teacher(courses=courses)
-    hours = [h for (c, h) in ch.keys()]
-    
-    for _, courses_list in teacher_map.items(): 
-        num_courses = len(courses_list)
-        if num_courses < 2:
-            continue
-            
-        for h in hours:
-            for i in range(num_courses):
-                for j in range(i+1, num_courses):
-                    c_i = courses_list[i] 
-                    c_j = courses_list[j] 
-                    
-                    if (c_i, h) in ch and (c_j, h) in ch:
-                        id_ci_h = ch[(c_i, h)]
-                        id_cj_h = ch[(c_j, h)]
-                        clauses.append([-id_ci_h, -id_cj_h])
-    return clauses
-
-def curriculum_clashes(ch, curricula):
-    clauses = []
-    for curriculum in curricula:
-        courses = list(curricula[curriculum].courses)
-        num_courses = len(courses)
-        hours = [h for (c, h) in ch]
-        for h in hours:
-            for i in range(num_courses):
-                for j in range(i + 1, num_courses):
-                    c_i = courses[i]
-                    c_j = courses[j]
-                    if (c_i, h) in ch and (c_j, h) in ch:
-                        clause = [-ch[(c_i, h)], -ch[(c_j, h)]]
-                        clauses.append(clause)
+            lits = [ch[(c, h)] for c in curriculum.courses if (c, h) in ch]
+            if len(lits) > 1: clauses.extend(CardEnc.atmost(lits=lits, bound=1).clauses)
     return clauses
 
 def relation_ch_kh(ch, kh, curricula):
     clauses = []
-    for (c, h) in ch:
-        ks = c_in_k(c, curricula)
-        lit_ch = -ch[(c, h)]
-        for k in ks:
-            if (k, h) in kh:
-                clauses.append([lit_ch, kh[(k, h)]])
-    ## Al menos uno debe ser verdadero
-    for (k, h) in kh:
-        courses = curricula[k].courses
-        if len(courses) > 0:
-            lit_kh = -kh[(k, h)]
-            aux = [ch[course, h] for course in courses]
-            clause = [lit_kh]
-            clause.extend(aux)
-            clauses.append(clause)
+    for (c, h), lit_ch in ch.items():
+        for k_id, curriculum in curricula.items():
+            if c in curriculum.courses and (k_id, h) in kh:
+                clauses.append([-lit_ch, kh[(k_id, h)]])
     return clauses
 
-def c_in_k(c, curricula):
-    out = []
-    for k in curricula:
-        curriculum = curricula[k]
-        for course in curriculum.courses:
-            if c == course:
-                out.append(k)
-    return out
-
-
 def relation_ch_cd(ch, cd, ppd):
-    """
-    Obtiene las clausulas a partir de las relaciones ch y cd
-    input:
-        ch: diccionario cuyas llaves son una tupla (clase, hora), el valor es la variable que representa
-        cd: diccionario cuyas llaves son una tupla (clase, dia), el valor es la variable que representa
-        ppd: entero que indica la cantidad de periodos por dia
-    output:
-        clauses: lista de clausulas para agregar
-    """
     clauses = []
-    # Ciclo para la primera relacion: si una clase se hace en una hora de un dia d, entonces esa clase se da en el dia d
-    for prop in ch:
-        c, h = prop
-        d = day(h, ppd)
-        clause = [-ch[prop], cd[(c, d)]]
-        clauses.append(clause)
-    # Ciclo segunda relacion: Si una clase se da en un dia d, entonces se da en alguna hora del dia d
-    for prop in cd:
-        c, d = prop
-        hours = hour_for_day(d, ppd)
-        aux = [ch[(c, h)] for h in hours]
-        clause = [-cd[prop]]
-        clause.extend(aux)
-        clauses.append(clause)
-    return clauses  
+    for (c, h), lit_ch in ch.items(): clauses.append([-lit_ch, cd[(c, day(h, ppd))]])
+    for (c, d), lit_cd in cd.items():
+        lits = [ch[(c, h)] for h in hour_for_day(d, ppd) if (c, h) in ch]
+        clauses.append([-lit_cd] + lits)
+    return clauses
 
-def get_ch(courses, hours, vpool, id_to_var):
-    ch = {}
-    for c in courses:
-        for h in range(hours):
-            var_id = vpool.id()
-            ch[(c, h)] = var_id
-            id_to_var[var_id] = ('ch', c, h)
-    return ch, id_to_var
+# --- Creación de Variables ---
+def get_ch(courses, hours, vpool):
+    return {(c, h): vpool.id(f'ch_{c}_{h}') for c in courses for h in range(hours)}
+def get_cd(courses, days, vpool):
+    return {(c, d): vpool.id(f'cd_{c}_{d}') for c in courses for d in range(days)}
+def get_cr(courses, rooms, vpool):
+    return {(c, r): vpool.id(f'cr_{c}_{r}') for c in courses for r in rooms}
+def get_kh(curricula, hours, vpool):
+    return {(k, h): vpool.id(f'kh_{k}_{h}') for k in curricula for h in range(hours)}
+def get_chr(courses, hours, rooms, vpool):
+    return {(c, h, r): vpool.id(f'chr_{c}_{h}_{r}') for c in courses for h in range(hours) for r in rooms}
 
-def get_chr(courses, total_hours, rooms, vpool, id_to_var):
-    chr_vars = {}
-    for c_id in courses:
-        for h in range(total_hours):
-            for r_id in rooms:
-                var_id = vpool.id()
-                chr_vars[(c_id, h, r_id)] = var_id
-                id_to_var[var_id] = ('chr', c_id, h, r_id)
-                
-    return chr_vars, id_to_var
-
-def get_cd(courses, days, vpool, id_to_var):
-    cd = {}
-    for c in courses:
-        for d in range(days):
-            var_id = vpool.id()
-            cd[(c, d)] = var_id
-            id_to_var[var_id] = ('cd', c, d)
-    return cd, id_to_var
-
-def get_cr(courses, rooms, vpool, id_to_var):
-    cr = {}
-    for c in courses:
-        for r in rooms:
-            var_id = vpool.id()
-            cr[(c, r)] = var_id
-            id_to_var[var_id] = ('cr', c, r)
-    return cr, id_to_var
-
-def get_kh(curricula, hours, vpool, id_to_var):
-    kh = {}
-    for k in curricula:
-        for h in range(hours):
-            var_id = vpool.id()
-            kh[(k, h)] = var_id
-            id_to_var[var_id] = ('kh', k, h)
-    return kh, id_to_var
-
+#==============================================================================
+# BLOQUE DE EJECUCIÓN PRINCIPAL
+#==============================================================================
 if __name__ == "__main__":
-    print("HOLA")
-    prueba = parse_ctt("toy.txt")
-    #(hard,_) = encoder(prueba, 0)
-    #print(hard)
-    (hard,soft, _) = encoder(prueba, 1)
-    print(soft)
+    input_file = sys.argv[1] if len(sys.argv) > 1 else "data/toy.txt"
+    print(f"--- Running Encoder in MaxSAT mode on: {input_file} ---")
+
+    instance = parse_ctt(input_file)
+    
+    print(f"Encoding '{instance.name}'...")
+    start_time = time.time()
+    hard_clauses, soft_clauses, vpool = encoder(instance, type_sat=1)
+    encoding_time = time.time() - start_time
+    
+    soft_count = len(soft_clauses) if soft_clauses else 0
+    print(f"Generated {len(hard_clauses)} hard and {soft_count} soft clauses in {encoding_time:.2f}s.")
+    print(f"Total variables: {vpool.top}")
+
+    print("Preparing WCNF formula...")
+    wcnf = WCNF()
+    wcnf.nv = vpool.top
+    for clause in hard_clauses: wcnf.append(clause)
+    if soft_clauses:
+        for weight, clause in soft_clauses: wcnf.append(clause, weight=weight)
+    
+    print("Starting MaxSAT solver...")
+    start_time = time.time()
+    with RC2(wcnf) as solver:
+        if solver.compute():
+            solving_time = time.time() - start_time
+            print(f"\nSolution found in {solving_time:.2f}s!")
+            print(f"Optimal cost: {solver.cost}")
+        else:
+            solving_time = time.time() - start_time
+            print(f"\nProblem is UNSATISFIABLE. Search terminated in {solving_time:.2f}s.")
+            print("This indicates a contradiction in the HARD clauses.")

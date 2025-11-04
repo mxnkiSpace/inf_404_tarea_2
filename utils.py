@@ -52,3 +52,70 @@ def is_first_slot_of_day(h, ppd):
 
 def is_last_slot_of_day(h, ppd):
     return (h + 1) % ppd == 0
+
+# Contenido de utils.py (tu función parse_xml debe estar aquí arriba)
+
+# ... (la función parse_xml que ya existe)
+
+# >>> AÑADE LA NUEVA FUNCIÓN AQUÍ ABAJO <<<
+
+def decode_solution(model, var_map, data):
+    """
+    Traduce el modelo de PySAT a un horario legible.
+
+    Args:
+        model (list): La lista de literales del modelo encontrado por el solver.
+        var_map (dict): El mapeo de (tipo, c, h/r) -> ID numérico.
+        data (dict): El diccionario con los datos parseados del XML.
+    """
+    reverse_var_map = {v: k for k, v in var_map.items()}
+    course_to_room = {}
+    schedule = {}
+
+    true_vars = [var for var in model if var > 0]
+
+    # Paso A: Encontrar la asignación de sala para cada curso
+    for var_id in true_vars:
+        if var_id in reverse_var_map:
+            var_name = reverse_var_map[var_id]
+            var_type = var_name[0]
+            if var_type == 'cr':
+                _, course, room = var_name
+                course_to_room[course] = room
+
+    # Paso B: Construir el horario
+    for var_id in true_vars:
+        if var_id in reverse_var_map:
+            var_name = reverse_var_map[var_id]
+            var_type = var_name[0]
+            if var_type == 'ch':
+                _, course, timeslot = var_name
+                if timeslot not in schedule:
+                    schedule[timeslot] = []
+                room = course_to_room.get(course, 'SALA_DESCONOCIDA')
+                schedule[timeslot].append({'course': course, 'room': room})
+
+    print("\n" + "="*25)
+    print("  HORARIO GENERADO")
+    print("="*25 + "\n")
+
+    days_order = [d['id'] for d in data['days']]
+    timeslots_by_day = {day_id: [] for day_id in days_order}
+    for ts in data['time_slots']:
+        timeslots_by_day[ts['day']].append(ts)
+
+    for day_id in days_order:
+        day_name = next(d['name'] for d in data['days'] if d['id'] == day_id)
+        print(f"--- {day_name.upper()} ---")
+        
+        day_timeslots = sorted(timeslots_by_day[day_id], key=lambda x: x['start'])
+
+        for ts in day_timeslots:
+            ts_id = ts['id']
+            ts_name = ts['name']
+            if ts_id in schedule:
+                for entry in schedule[ts_id]:
+                    course_id = entry['course']
+                    room_id = entry['room']
+                    print(f"  {ts_name}: Curso '{course_id}' en Aula '{room_id}'")
+        print()

@@ -2,6 +2,7 @@ from classes_ctt import Instance, parse_ctt
 from utils import hour_for_day, day, map_teacher, exactly, at_least, is_first_slot_of_day, is_last_slot_of_day
 from pysat.formula import IDPool
 from pysat.card import CardEnc, ITotalizer
+from utils import parse_xml, decode_solution
 import time 
 
 def encoder(instance: Instance, type_sat:int = 0):
