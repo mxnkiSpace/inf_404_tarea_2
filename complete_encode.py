@@ -11,6 +11,7 @@ from math import ceil
 from pysat.formula import IDPool, WCNF, CNF
 from pysat.card import CardEnc, EncType, ITotalizer
 from pysat.solvers import Glucose3
+from pysat.examples.rc2 import RC2
 
 # ============= CLASES =============
 @dataclass
@@ -675,114 +676,54 @@ def solve_sat(hard_clauses, timeout=300):
     solver.delete()
     return result
 
-def solve_maxsat_iterative(hard_clauses, soft_clauses_weighted, timeout=300):
-    """Solver iterativo para Secciones 4.1, 4.2, 4.4"""
-    print(f"Starting iterative MaxSAT solver (timeout: {timeout}s)...")
-    start_time = time.time()
-    best_cost = float('inf')
-    best_model = None
-    
+def solve_maxsat_rc2(hard_clauses, soft_clauses_weighted, timeout=300):
+    """
+    Solver MaxSAT usando RC2 (core-based) para Secciones 4.1, 4.2, 4.4
+    RC2 es un solver basado en unsatisfiable cores como describe el paper en Sección 2.3
+    """
+    print(f"Starting RC2 MaxSAT solver (timeout: {timeout}s)...")
     print(f"Hard clauses: {len(hard_clauses)}, Soft clauses: {len(soft_clauses_weighted)}")
     
-    # Paso 1: Encontrar solución inicial
-    print("\nStep 1: Finding initial feasible solution...")
-    solver = Glucose3()
+    start_time = time.time()
     
+    # Create WCNF formula
+    wcnf = WCNF()
+    
+    # Add hard clauses
     for clause in hard_clauses:
-        solver.add_clause(clause)
+        wcnf.append(clause)
     
-    if not solver.solve():
-        print("UNSAT: No feasible solution exists")
-        solver.delete()
-        return None, None
-    
-    model = solver.get_model()
-    model_set = set(model)
-    cost = 0
-    
+    # Add soft clauses with weights
     for weight, clause in soft_clauses_weighted:
-        satisfied = any(lit in model_set for lit in clause)
-        if not satisfied:
-            cost += weight
+        wcnf.append(clause, weight=weight)
     
-    best_cost = cost
-    best_model = model
-    elapsed = time.time() - start_time
-    print(f"Initial solution found! Cost: {best_cost} (time: {elapsed:.2f}s)")
+    print(f"\nWCNF formula created: {wcnf.nv} variables, {len(wcnf.hard)} hard, {len(wcnf.soft)} soft")
+    print("Starting RC2 optimization...\n")
     
-    # Paso 2: Mejorar iterativamente
-    print("\nStep 2: Improving solution iteratively...")
-    iteration = 0
-    max_iterations = 50
-    
-    while iteration < max_iterations:
-        elapsed = time.time() - start_time
-        if elapsed > timeout:
-            print(f"\nTimeout reached ({timeout}s).")
-            break
-        
-        iteration += 1
-        
-        if best_cost == 0:
-            print("\nOptimal solution found (cost = 0)!")
-            break
-        
-        print(f"  Iteration {iteration}: Searching for cost < {best_cost}...", end=" ", flush=True)
-        
-        solver.delete()
-        solver = Glucose3()
-        
-        for clause in hard_clauses:
-            solver.add_clause(clause)
-        
-        max_var = max(max(abs(lit) for lit in clause) for clause in hard_clauses + [c for _, c in soft_clauses_weighted])
-        relaxation_vars = []
-        
-        for i, (weight, clause) in enumerate(soft_clauses_weighted):
-            relax_var = max_var + i + 1
-            relaxation_vars.append((relax_var, weight))
-            solver.add_clause(clause + [relax_var])
-        
-        found_better = False
-        attempts = 0
-        max_attempts = 5
-        
-        while attempts < max_attempts and solver.solve():
-            attempts += 1
-            model = solver.get_model()
-            model_set = set(model)
+    # Create RC2 solver
+    try:
+        with RC2(wcnf, solver='g3', adapt=True, exhaust=True, minz=True, trim=5) as solver:
+            # Compute optimal solution
+            model = solver.compute()
             
-            cost = 0
-            for weight, clause in soft_clauses_weighted:
-                satisfied = any(lit in model_set for lit in clause)
-                if not satisfied:
-                    cost += weight
-            
-            if cost < best_cost:
-                best_cost = cost
-                best_model = model
+            if model is not None:
+                cost = solver.cost
                 elapsed = time.time() - start_time
-                print(f"Better! Cost: {best_cost} (time: {elapsed:.2f}s)")
-                found_better = True
-                break
+                print(f"\nOptimal solution found!")
+                print(f"Cost: {cost}")
+                print(f"Time: {elapsed:.2f}s")
+                return cost, elapsed
             else:
-                blocking_clause = []
-                for relax_var, _ in relaxation_vars:
-                    if relax_var in model_set:
-                        blocking_clause.append(-relax_var)
-                    else:
-                        blocking_clause.append(relax_var)
+                elapsed = time.time() - start_time
+                print(f"\nUNSAT: No feasible solution exists")
+                print(f"Time: {elapsed:.2f}s")
+                return None, elapsed
                 
-                if blocking_clause:
-                    solver.add_clause(blocking_clause)
-        
-        if not found_better:
-            print("No improvement.")
-            break
-    
-    solver.delete()
-    elapsed = time.time() - start_time
-    return best_cost, elapsed
+    except Exception as e:
+        elapsed = time.time() - start_time
+        print(f"\nError during solving: {e}")
+        print(f"Time: {elapsed:.2f}s")
+        return None, elapsed
 
 # ============= MAIN =============
 if __name__ == "__main__":
@@ -848,7 +789,7 @@ if __name__ == "__main__":
     if mode == "3":
         cost, solving_time = solve_sat(hard_clauses, timeout)
     else:
-        cost, solving_time = solve_maxsat_iterative(hard_clauses, soft_clauses_weighted, timeout)
+        cost, solving_time = solve_maxsat_rc2(hard_clauses, soft_clauses_weighted, timeout)
     
     # Resumen final
     print(f"\n{'='*70}")
