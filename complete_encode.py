@@ -395,6 +395,7 @@ def room_stability_hard(courses, rooms, cr, vpool):
 
 def room_stability_soft(courses, rooms, cr, vpool):
     """Room stability SOFT (Sección 4.4)"""
+    hard_clauses = []
     weighted_clauses = []
     all_room_ids = list(rooms.keys())
     
@@ -406,19 +407,28 @@ def room_stability_soft(courses, rooms, cr, vpool):
         
         if len(literals) <= 1:
             if len(literals) == 1:
-                weighted_clauses.append((0, literals))
+                hard_clauses.append(literals)
             continue
         
-        tot = ITotalizer(lits=literals, ubound=len(literals), top_id=vpool.top)
-        vpool._top = tot.top_id
+        # Generate totalizer encoding for "at most k rooms"
+        # We want to penalize using more than 1 room, so we use atmost encoding
+        cnf = CardEnc.atmost(lits=literals, bound=len(literals), vpool=vpool, encoding=EncType.totalizer)
+        hard_clauses.extend(cnf.clauses)
         
-        if len(tot.rhs) > 0:
-            weighted_clauses.append((0, [tot.rhs[0]]))
+        # The totalizer creates auxiliary variables for "at most i"
+        # We need to extract the "at least k" variables from the encoding
+        # For totalizer, we can create the constraints manually
+        # At least 1 room must be used
+        hard_clauses.append(literals)  # At least one room
         
-        for i in range(1, len(tot.rhs)):
-            weighted_clauses.append((1, [-tot.rhs[i]]))
+        # Penalize each additional room beyond the first
+        # We use a different approach: for each pair of rooms, penalize if both are used
+        for i in range(len(literals)):
+            for j in range(i + 1, len(literals)):
+                # Penalize if both room i and room j are used
+                weighted_clauses.append((1, [-literals[i], -literals[j]]))
     
-    return weighted_clauses
+    return hard_clauses, weighted_clauses
 
 def min_working_days_hard(courses, cd, days, vpool):
     """Min working days HARD (Sección 3)"""
@@ -435,6 +445,7 @@ def min_working_days_hard(courses, cd, days, vpool):
 
 def min_working_days_soft(courses, cd, days, vpool):
     """Min working days SOFT (Sección 4.2)"""
+    hard_clauses = []
     weighted_clauses = []
     
     for c_id, course in courses.items():
@@ -447,14 +458,32 @@ def min_working_days_soft(courses, cd, days, vpool):
         if not literals or k <= 0 or k > len(literals):
             continue
         
-        tot = ITotalizer(lits=literals, ubound=len(literals), top_id=vpool.top)
-        vpool._top = tot.top_id
+        # Generate totalizer encoding for "at least k days"
+        cnf = CardEnc.atleast(lits=literals, bound=k, vpool=vpool, encoding=EncType.totalizer)
+        hard_clauses.extend(cnf.clauses)
         
-        for j in range(k - 1, 0, -1):
-            if j < len(tot.rhs):
-                weighted_clauses.append((5, [tot.rhs[j]]))
+        # Now we need to extract the auxiliary variables from the totalizer
+        # The totalizer creates variables that represent "at least i literals are true"
+        # We need to penalize having less than k days
+        # For each j from 1 to k-1, penalize "not having at least j days"
+        
+        # Since CardEnc doesn't expose the auxiliary variables directly,
+        # we use a different approach: add soft clauses for each missing day
+        # If we have less than k days, we pay 5 per missing day
+        for j in range(1, k):
+            # Create a soft clause that penalizes having less than j days
+            # This is equivalent to penalizing "not (at least j days)"
+            # We use CardEnc.atleast with bound j and make it soft
+            cnf_j = CardEnc.atleast(lits=literals, bound=j, vpool=vpool, encoding=EncType.totalizer)
+            # The last clause in cnf_j.clauses is the one that enforces "at least j"
+            # We want to make this soft with weight 5
+            if cnf_j.clauses:
+                # Add all clauses except the last one as hard
+                hard_clauses.extend(cnf_j.clauses[:-1])
+                # Add the last clause as soft with weight 5
+                weighted_clauses.append((5, cnf_j.clauses[-1]))
     
-    return weighted_clauses
+    return hard_clauses, weighted_clauses
 
 def isolated_lectures_hard(kh, curricula, ppd, total_hours):
     """Isolated lectures HARD (Sección 3)"""
@@ -574,7 +603,6 @@ def encode_section_4_1(instance):
     hard_clauses.extend(number_of_lectures(courses, ch, total_hours, vpool))
     hard_clauses.extend(room_capacity_hard(courses, rooms, cr))
     hard_clauses.extend(room_stability_hard(courses, rooms, cr, vpool))
-    hard_clauses.extend(min_working_days_hard(courses, cd, days, vpool))
     
     soft_clauses_weighted.extend(isolated_lectures_soft(kh, curricula, ppd, total_hours))
     
@@ -611,7 +639,10 @@ def encode_section_4_2(instance):
     hard_clauses.extend(room_stability_hard(courses, rooms, cr, vpool))
     
     soft_clauses_weighted.extend(isolated_lectures_soft(kh, curricula, ppd, total_hours))
-    soft_clauses_weighted.extend(min_working_days_soft(courses, cd, days, vpool))
+    
+    mwd_hard, mwd_soft = min_working_days_soft(courses, cd, days, vpool)
+    hard_clauses.extend(mwd_hard)
+    soft_clauses_weighted.extend(mwd_soft)
     
     return hard_clauses, soft_clauses_weighted, vpool
 
@@ -647,8 +678,15 @@ def encode_section_4_4(instance):
     hard_clauses.extend(number_of_lectures(courses, ch, total_hours, vpool))
     
     soft_clauses_weighted.extend(room_capacity_soft_chr(courses, rooms, chr_vars, total_hours))
-    soft_clauses_weighted.extend(room_stability_soft(courses, rooms, cr, vpool))
-    soft_clauses_weighted.extend(min_working_days_soft(courses, cd, days, vpool))
+    
+    rs_hard, rs_soft = room_stability_soft(courses, rooms, cr, vpool)
+    hard_clauses.extend(rs_hard)
+    soft_clauses_weighted.extend(rs_soft)
+    
+    mwd_hard, mwd_soft = min_working_days_soft(courses, cd, days, vpool)
+    hard_clauses.extend(mwd_hard)
+    soft_clauses_weighted.extend(mwd_soft)
+    
     soft_clauses_weighted.extend(isolated_lectures_soft(kh, curricula, ppd, total_hours))
     
     return hard_clauses, soft_clauses_weighted, vpool
@@ -684,27 +722,45 @@ def solve_maxsat_rc2(hard_clauses, soft_clauses_weighted, timeout=300):
     print(f"Starting RC2 MaxSAT solver (timeout: {timeout}s)...")
     print(f"Hard clauses: {len(hard_clauses)}, Soft clauses: {len(soft_clauses_weighted)}")
     
+    filtered_soft = [(w, c) for w, c in soft_clauses_weighted if w > 0]
+    zero_weight = [(w, c) for w, c in soft_clauses_weighted if w == 0]
+    
+    if zero_weight:
+        print(f"Warning: Found {len(zero_weight)} soft clauses with weight 0, moving to hard")
+        hard_clauses.extend([c for w, c in zero_weight])
+    
     start_time = time.time()
     
-    # Create WCNF formula
     wcnf = WCNF()
     
-    # Add hard clauses
     for clause in hard_clauses:
         wcnf.append(clause)
     
-    # Add soft clauses with weights
-    for weight, clause in soft_clauses_weighted:
+    for weight, clause in filtered_soft:
         wcnf.append(clause, weight=weight)
     
     print(f"\nWCNF formula created: {wcnf.nv} variables, {len(wcnf.hard)} hard, {len(wcnf.soft)} soft")
     print("Starting RC2 optimization...\n")
     
-    # Create RC2 solver
     try:
+        import signal
+        
+        def timeout_handler(signum, frame):
+            raise TimeoutError("RC2 solver timeout")
+        
+        try:
+            signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(timeout)
+        except:
+            print("Warning: Timeout not supported on this platform")
+        
         with RC2(wcnf, solver='g3', adapt=True, exhaust=True, minz=True, trim=5) as solver:
-            # Compute optimal solution
             model = solver.compute()
+            
+            try:
+                signal.alarm(0)
+            except:
+                pass
             
             if model is not None:
                 cost = solver.cost
@@ -719,6 +775,10 @@ def solve_maxsat_rc2(hard_clauses, soft_clauses_weighted, timeout=300):
                 print(f"Time: {elapsed:.2f}s")
                 return None, elapsed
                 
+    except TimeoutError:
+        elapsed = time.time() - start_time
+        print(f"\nTimeout reached after {elapsed:.2f}s")
+        return None, elapsed
     except Exception as e:
         elapsed = time.time() - start_time
         print(f"\nError during solving: {e}")
@@ -760,7 +820,6 @@ if __name__ == "__main__":
     print(f"  Curricula: {instance.num_curricula}")
     print()
     
-    # Seleccionar encoder según modo
     start_time = time.time()
     
     if mode == "3":
@@ -785,13 +844,11 @@ if __name__ == "__main__":
     print(f"Total variables: {vpool.top}")
     print()
     
-    # Resolver según modo
     if mode == "3":
         cost, solving_time = solve_sat(hard_clauses, timeout)
     else:
         cost, solving_time = solve_maxsat_rc2(hard_clauses, soft_clauses_weighted, timeout)
     
-    # Resumen final
     print(f"\n{'='*70}")
     print(f"RESULTS SUMMARY")
     print(f"{'='*70}")
